@@ -94,7 +94,6 @@ const clickAt = async (page, lon, lat) => page.evaluate(([lon, lat]) => {
   console.log("sectored select:", JSON.stringify(s1));
   if (s1.vessel) {
     // steer vessel 180° — should cross into a different sector or out of all
-    const rose = page.locator(".rose [role='slider'], .rose svg").first();
     const before = await page.evaluate(() => document.querySelector(".sheet .notation")?.textContent);
     await page.evaluate(() => {
       const v = document.querySelector(".vessel");

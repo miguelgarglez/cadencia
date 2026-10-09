@@ -30,8 +30,9 @@ uniform float u_px;
 uniform float u_zoom;
 uniform vec3 u_sun;        // subsolar direction unit vector
 uniform float u_selected;  // point index or -1
-uniform vec3 u_selColor;   // override color for selected (sector bearing), or vec3(-1)
+uniform vec3 u_selColor;   // dim color for a selected light outside its sectors, or vec3(-1)
 uniform vec2 u_selSeq;     // selected override: seqLen, period — row 0 of u_seq (0 = off)
+uniform vec2 u_selCols;    // selected override palette: packed colors, count
 uniform float u_calm;      // reduced motion: ember only, no flashing
 uniform highp sampler2D u_seq;
 
@@ -58,7 +59,13 @@ void main() {
     float period = a_timing.x;
     float start = a_timing.y;
     float len = a_timing.z;
-    if (sel > 0.5 && u_selSeq.x > 0.5) { start = 0.0; len = u_selSeq.x; period = u_selSeq.y; }
+    bool overridden = sel > 0.5 && u_selSeq.x > 0.5;
+    if (overridden) {
+      start = 0.0; len = u_selSeq.x; period = u_selSeq.y;
+      // the active sub-light carries its own palette
+      colorsPacked = u_selCols.x;
+      nCols = int(u_selCols.y);
+    }
     float t = mod(u_time, period);
     level = 0.0;
     for (float i = 0.0; i < ${TEX_W}.0; i++) {
@@ -80,7 +87,9 @@ void main() {
            : c == 5 ? vec3(0.78,0.62,1.0)
            : vec3(1.0,0.93,0.78);
 
-  if (sel > 0.5 && u_selColor.x >= 0.0) col = u_selColor;
+  // outside every sector the light shows nothing — dim to a cold ember.
+  // (an overridden timeline keeps its own per-segment colors instead)
+  if (sel > 0.5 && u_selColor.x >= 0.0 && u_selSeq.x <= 0.5) col = u_selColor;
 
   // solar dimming: lights read strongly in darkness, faint in daylight
   float lat = atan(sinh(3.14159265 * (1.0 - 2.0 * a_merc.y)));
@@ -145,6 +154,7 @@ export class LightField implements CustomLayerInterface {
   private selColor: [number, number, number] = [-1, -1, -1];
   private selSeqLen = 0;
   private selSeqPeriod = 0;
+  private selCols: [number, number] = [0, 0]; // packed palette, count
   private activeLight: Light | null = null;
   private calm = false;
   private startWall = Date.now() / 1000;
@@ -192,7 +202,7 @@ export class LightField implements CustomLayerInterface {
       return;
     }
     this.prog = prog;
-    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_selSeq", "u_calm", "u_seq"])
+    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_selSeq", "u_selCols", "u_calm", "u_seq"])
       this.u[name] = gl.getUniformLocation(prog, name);
 
     this.vao = gl.createVertexArray();
@@ -336,6 +346,10 @@ export class LightField implements CustomLayerInterface {
     }
     this.selSeqLen = n;
     this.selSeqPeriod = l.period;
+    const cols = l.colors.length ? l.colors : ["W" as const];
+    let packed = 0;
+    for (let c = 0; c < Math.min(4, cols.length); c++) packed |= COLOR_IDS[cols[c]!]! << (3 * c);
+    this.selCols = [packed, Math.min(4, cols.length)];
     gl.bindTexture(gl.TEXTURE_2D, this.seqTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, 1, gl.RGBA, gl.FLOAT, this.seqData.subarray(0, TEX_W * 4));
     gl.bindTexture(gl.TEXTURE_2D, null);
@@ -411,6 +425,7 @@ export class LightField implements CustomLayerInterface {
     gl.uniform1f(this.u.u_selected!, this.selectedIdx);
     gl.uniform3fv(this.u.u_selColor!, this.selColor);
     gl.uniform2f(this.u.u_selSeq!, this.selSeqLen, this.selSeqPeriod);
+    gl.uniform2f(this.u.u_selCols!, this.selCols[0], this.selCols[1]);
     gl.uniform1f(this.u.u_calm!, this.calm ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.seqTex);

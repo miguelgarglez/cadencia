@@ -105,6 +105,7 @@ export default function App() {
 
   const [ready, setReady] = useState(false);
   const [dataError, setDataError] = useState(false);
+  const [linkMiss, setLinkMiss] = useState(false);
   const [selected, setSelected] = useState<StorePoint | null>(null);
   const [leaving, setLeaving] = useState(false);
   const [inView, setInView] = useState(0);
@@ -214,7 +215,11 @@ export default function App() {
           select(map, p);
         }
       }, 400);
-      pollStop = setTimeout(() => { if (pollTimer) clearInterval(pollTimer); }, 15000);
+      pollStop = setTimeout(() => {
+        if (pollTimer) clearInterval(pollTimer);
+        // the linked light never arrived — say so instead of hanging silent
+        if (pendingIdRef.current) { pendingIdRef.current = null; setLinkMiss(true); }
+      }, 15000);
     });
 
     // idle drift: an untouched sea slowly settles on the nearest light worth
@@ -240,7 +245,8 @@ export default function App() {
       }
     }, 5000);
 
-    store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true));
+    // in-view counts points, so the dock total does too — same units
+    store.init().then((ix) => setTotal(ix.points)).catch(() => setDataError(true));
     store.onFail = () => setDataError(true);
     (window as unknown as Record<string, unknown>).__cadencia = store;
     (window as unknown as Record<string, unknown>).__map = map;
@@ -268,6 +274,16 @@ export default function App() {
   const freeRect = useCallback(() => {
     const vw = window.innerWidth, vh = window.innerHeight;
     return { x0: 24, y0: 84, x1: vw - 24, y1: vh - sheetRef.current - DOCK_H - 20 };
+  }, []);
+
+  // overlay elements the vessel must not spawn under — measured live
+  const blockedRects = useCallback((): DOMRect[] => {
+    const out: DOMRect[] = [];
+    for (const sel of [".guide-tip", ".sheet", ".err-tray"]) {
+      const r = document.querySelector(sel)?.getBoundingClientRect();
+      if (r && r.width) out.push(r);
+    }
+    return out;
   }, []);
 
   const removeVessel = useCallback(() => {
@@ -394,7 +410,7 @@ export default function App() {
       v.el.setAttribute("aria-valuenow", String(Math.round(b)));
       v.el.setAttribute("aria-valuetext", `bearing ${Math.round(b)} degrees${color ? `, light shows ${color}` : ", outside charted sectors"}`);
       const ship = v.el.querySelector(".ship") as HTMLElement | null;
-      if (ship) ship.style.transform = `rotate(${(b + 180) % 360}deg)`;
+      if (ship) ship.style.setProperty("--rot", `${(b + 180) % 360}deg`);
     }
     updateOverlay();
   }, [haptic, updateOverlay]);
@@ -503,6 +519,10 @@ export default function App() {
     // clears the sheet, the dock, and the wordmark zone
     const c = map.project([p.lon, p.lat]);
     const fr = freeRect();
+    const blocks = blockedRects();
+    const clear = (x: number, y: number) =>
+      x > fr.x0 && x < fr.x1 && y > fr.y0 && y < fr.y1 &&
+      !blocks.some((r) => x > r.left - 24 && x < r.right + 24 && y > r.top - 24 && y < r.bottom + 24);
     const R = window.innerWidth <= 640 ? 105 : 135;
     const widest = widestSectorMid(p);
     const candidates = [widest, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
@@ -510,7 +530,16 @@ export default function App() {
     for (const deg of candidates) {
       const a = (deg * Math.PI) / 180;
       const x = c.x + Math.sin(a) * R, y = c.y - Math.cos(a) * R;
-      if (x > fr.x0 && x < fr.x1 && y > fr.y0 && y < fr.y1) { pos = { x, y }; break; }
+      if (clear(x, y)) { pos = { x, y }; break; }
+    }
+    // no bearing clears the overlays — widen the ring once, then clamp
+    if (!pos) for (const RR of [R * 1.5, R * 2.2]) {
+      for (const deg of candidates) {
+        const a = (deg * Math.PI) / 180;
+        const x = c.x + Math.sin(a) * RR, y = c.y - Math.cos(a) * RR;
+        if (clear(x, y)) { pos = { x, y }; break; }
+      }
+      if (pos) break;
     }
     if (!pos) {
       const a = (widest * Math.PI) / 180;
@@ -525,10 +554,17 @@ export default function App() {
     applyVesselBearing(p, ll.lat, ll.lng);
 
     let pid = -1;
+    // grab offset: the vessel keeps its position relative to the finger —
+    // no jump-to-center on pickup, secondary pointers are ignored
+    let grabDX = 0, grabDY = 0;
     el.addEventListener("pointerdown", (e) => {
+      if (pid !== -1) return;
       pid = e.pointerId;
       el.setPointerCapture(pid);
       vesselDrag.current = true;
+      const vp = el.getBoundingClientRect();
+      grabDX = e.clientX - (vp.left + vp.width / 2);
+      grabDY = e.clientY - (vp.top + vp.height / 2);
       el.classList.add("grabbed");
       haptic("nudge");
       e.preventDefault();
@@ -548,9 +584,9 @@ export default function App() {
       steerVesselTo(map, p, currentScreenBearing(map, p) + d);
     });
     el.addEventListener("pointermove", (e) => {
-      if (!vesselDrag.current || !vesselRef.current) return;
+      if (!vesselDrag.current || e.pointerId !== pid || !vesselRef.current) return;
       e.stopPropagation();
-      const ll = map.unproject([e.clientX, e.clientY]);
+      const ll = map.unproject([e.clientX - grabDX, e.clientY - grabDY]);
       vesselRef.current.lat = ll.lat;
       vesselRef.current.lon = ll.lng;
       positionVessel(map);
@@ -559,7 +595,7 @@ export default function App() {
     const up = () => { vesselDrag.current = false; pid = -1; el.classList.remove("grabbed"); };
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
-  }, [applyVesselBearing, freeRect, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
+  }, [applyVesselBearing, blockedRects, freeRect, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -627,7 +663,9 @@ export default function App() {
     };
     tick();
     const t = setInterval(tick, 350);
-    return () => clearInterval(t);
+    // anchors track the camera live — no easing lag during pans
+    map.on("move", tick);
+    return () => { clearInterval(t); map.off("move", tick); };
   }, [guideOn, ready]);
 
   const flyToGuideTarget = useCallback(() => {
@@ -732,7 +770,7 @@ export default function App() {
     if (!p) return false;
     try {
       const m = await import("./lib/share.ts");
-      const ok = await m.shareCard(p);
+      const ok = await m.shareCard(p, vesselInfoRef.current?.seen ?? p.light, vesselInfoRef.current?.b ?? null);
       if (ok) haptic("success");
       return ok;
     } catch {
@@ -794,9 +832,13 @@ export default function App() {
           onClose={deselect}
           onCopyLink={copyLink}
           onSaveCard={saveCard}
+          onHeightChange={(h) => {
+            sheetRef.current = h;
+            mapRef.current?.setPadding({ top: 0, left: 0, right: 0, bottom: h + DOCK_H + 16 });
+          }}
         />
       )}
-      {guideOn && ready && (
+      {guideOn && ready && inView > 0 && (
         <Guide
           anchor={guideAnchor}
           selected={selected}
@@ -804,6 +846,10 @@ export default function App() {
           crossed={crossed}
           targetName={guideTargetName}
           onFlyToTarget={flyToGuideTarget}
+          onTargetClick={() => {
+            const map = mapRef.current, t = guideTargetRef.current;
+            if (map && t) select(map, t);
+          }}
           onDone={() => { lsSet("cadencia-guide-done", "1"); setGuideOn(false); }}
         />
       )}
@@ -811,7 +857,13 @@ export default function App() {
       {dataError && ready && (
         <div className="err-tray" role="alert">
           <span>the light list failed to arrive — the sea is still here, but it can't speak</span>
-          <button onClick={() => { setDataError(false); store.retry(); store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true)); }}>retry</button>
+          <button onClick={() => { setDataError(false); store.retry(); store.init().then((ix) => setTotal(ix.points)).catch(() => setDataError(true)); }}>retry</button>
+        </div>
+      )}
+      {linkMiss && (
+        <div className="err-tray" role="alert">
+          <span>that light isn't on this chart — it may have been renamed or dropped at sea</span>
+          <button onClick={() => setLinkMiss(false)}>dismiss</button>
         </div>
       )}
     </>

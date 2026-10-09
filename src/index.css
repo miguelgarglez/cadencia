@@ -109,6 +109,37 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 .dock button.cell .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--faint); }
 .dock button.cell:focus-visible { outline: 1.5px solid var(--magenta); outline-offset: -2px; }
 
+/* signals popover: secondary prefs live behind one cell, not their own row */
+.dock .prefs-wrap { position: relative; display: flex; }
+.prefs-pop {
+  position: absolute; bottom: calc(100% + 10px); right: 0; z-index: 16;
+  display: flex; flex-direction: column; min-width: 150px;
+  background: rgba(6, 11, 18, 0.97); border: 1px solid var(--hairline);
+  border-radius: 3px; padding: 4px;
+  animation: prefs-in 160ms var(--ease-out);
+}
+@keyframes prefs-in { from { opacity: 0; transform: translateY(6px); } }
+.prefs-pop button {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; font-family: var(--font-mono); font-size: 11.5px;
+  letter-spacing: 0.08em; color: var(--text); border-radius: 2px;
+  transition: background 120ms;
+}
+.prefs-pop button:hover { background: rgba(255, 255, 255, 0.05); }
+.prefs-pop button b { margin-left: auto; color: var(--faint); font-weight: 400; }
+.prefs-pop button .sw {
+  width: 14px; height: 8px; border-radius: 4px; position: relative;
+  border: 1px solid var(--faint); transition: border-color 160ms;
+}
+.prefs-pop button .sw::after {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 4px; height: 4px;
+  border-radius: 50%; background: var(--faint);
+  transition: transform 160ms var(--ease-out), background 160ms;
+}
+.prefs-pop button .sw.on { border-color: var(--lit); }
+.prefs-pop button .sw.on::after { transform: translateX(6px); background: var(--lit); }
+.prefs-pop button:focus-visible { outline: 1.5px solid var(--magenta); outline-offset: -2px; }
+
 @media (max-width: 640px) {
   .dock { font-size: 10.5px; padding-right: 30px; }
   .dock .cell { padding: 0 8px; }
@@ -151,19 +182,13 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
   letter-spacing: 0.14em;
 }
 .sheet .sub {
-  font-family: var(--font-mono); font-size: 11px; color: var(--dim);
-  letter-spacing: 0.08em; margin: 3px 0 10px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--dim);
+  letter-spacing: 0.07em; margin: 3px 0 10px;
 }
 .sheet .notation {
   font-family: var(--font-mono); font-size: 16px; color: var(--magenta);
   letter-spacing: 0.05em; margin: 0 0 4px;
 }
-.sheet .from-bearing {
-  font-family: var(--font-mono); font-size: 10px; color: var(--dim);
-  letter-spacing: 0.1em; margin-bottom: 2px; min-height: 13px;
-}
-.sheet .from-bearing b { color: var(--text); font-weight: 500; }
-
 .strip { position: relative; height: 34px; margin: 8px 0 10px; }
 .strip svg { display: block; width: 100%; height: 100%; }
 .strip .seg-lit { opacity: 0.95; }
@@ -176,8 +201,8 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
   border-top: 1px solid var(--hairline-soft); margin-top: 2px;
 }
 .sheet .meta span {
-  font-family: var(--font-mono); font-size: 11px; color: var(--dim);
-  letter-spacing: 0.08em; padding: 7px 12px 0 0; margin-right: 12px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--dim);
+  letter-spacing: 0.06em; padding: 7px 12px 0 0; margin-right: 12px;
   border-right: 1px solid var(--hairline-soft);
 }
 .sheet .meta span:last-child { border-right: 0; }
@@ -188,8 +213,8 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 
 .sheet .actions { display: flex; gap: 22px; margin-top: 14px; }
 .act {
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
-  color: var(--text); padding: 4px 1px; min-height: 30px;
+  font-family: var(--font-mono); font-size: 12.5px; letter-spacing: 0.08em;
+  color: var(--text); padding: 6px 1px; min-height: 34px;
   border-bottom: 1px solid var(--hairline);
   transition: transform 140ms var(--ease-out), border-color 160ms, color 160ms;
 }
@@ -217,8 +242,8 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 .rose svg { display: block; cursor: grab; touch-action: none; }
 .rose svg:active { cursor: grabbing; }
 .rose .cap {
-  font-family: var(--font-mono); font-size: 9px; color: var(--faint);
-  letter-spacing: 0.18em; text-align: center; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--faint);
+  letter-spacing: 0.14em; text-align: center; margin-top: 4px;
 }
 .rose .cap b { color: var(--dim); font-weight: 400; }
 
@@ -229,7 +254,9 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
     transform: none; border-left: 0; border-right: 0; border-bottom: 0;
     border-radius: 0; grid-template-columns: 1fr;
     max-height: 62vh; overflow-y: auto;
+    animation-name: sheet-in-y;
   }
+  @keyframes sheet-in-y { from { transform: translateY(24px); opacity: 0; } }
   .sheet.exit { transform: translateY(16px); }
   .sheet .body { padding: 12px 16px 12px; }
   .sheet h2 { font-size: 20px; }
@@ -238,15 +265,23 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
     display: flex; align-items: center; justify-content: space-between;
     padding: 2px 0 0;
   }
-  .sheet .rose { width: auto; border-left: 0; border-top: 1px solid var(--hairline-soft); padding: 12px 16px; }
+  .sheet .rose { width: auto; border-left: 0; border-top: 1px solid var(--hairline-soft); padding: 10px 16px 8px; }
+  /* the grip is a zone, not a pill — a real thumb target that takes drags */
+  .sheet .gripzone {
+    display: flex; justify-content: center; align-items: center;
+    min-height: 38px; margin: 0 -8px; cursor: grab; touch-action: none;
+  }
+  .sheet .gripzone:active { cursor: grabbing; }
+  .sheet .gripzone:focus-visible { outline: 1.5px solid var(--magenta); outline-offset: -3px; }
   .sheet .grip {
     display: block; width: 44px; height: 4px; border-radius: 2px;
-    background: var(--faint); margin: 8px auto 0;
+    background: var(--faint);
   }
+  .sheet .gripzone:active .grip { background: var(--magenta); }
   .sheet.peek .peekable { display: none; }
 }
 @media (min-width: 641px) {
-  .sheet .grip { display: none; }
+  .sheet .gripzone { display: none; }
 }
 
 /* ---------- vessel: a directional silhouette that points home ---------- */
@@ -258,11 +293,15 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 .vessel:focus-visible { outline: 1.5px solid var(--magenta); outline-offset: 2px; border-radius: 50%; }
 .vessel .ship {
   width: 22px; height: 22px;
+  transform: rotate(var(--rot, 0deg));
   transition: transform 180ms var(--ease-out);
   filter: drop-shadow(0 1px 5px rgba(0, 0, 0, 0.7));
 }
 .vessel.grabbed { cursor: grabbing; }
-.vessel.grabbed .ship { transform: scale(1.25); }
+.vessel.grabbed .ship {
+  transform: rotate(var(--rot, 0deg)) scale(1.28);
+  filter: drop-shadow(0 2px 8px rgba(224, 89, 138, 0.45));
+}
 .vessel .halo {
   position: absolute; inset: 6px; border-radius: 50%;
   border: 1px solid rgba(224, 89, 138, 0);
@@ -280,10 +319,10 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
   padding: 11px 13px; font-size: 12.5px; line-height: 1.5; color: var(--text);
   transition: left 300ms var(--ease-out), top 300ms var(--ease-out), opacity 200ms;
 }
-.guide-tip .k { font-family: var(--font-mono); font-size: 9.5px; color: var(--magenta); letter-spacing: 0.16em; display: block; margin-bottom: 4px; }
+.guide-tip .k { font-family: var(--font-mono); font-size: 10.5px; color: var(--magenta); letter-spacing: 0.14em; display: block; margin-bottom: 4px; }
 .guide-tip .row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .guide-tip .dismiss, .guide-tip .goto {
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
   text-decoration: underline; text-underline-offset: 3px;
   transition: color 140ms, transform 140ms var(--ease-out);
 }
@@ -292,13 +331,16 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 .guide-tip .dismiss:hover, .guide-tip .goto:hover { color: var(--text); }
 .guide-tip .dismiss:active, .guide-tip .goto:active { transform: scale(0.94); }
 
-/* pulsing ring on the guide's current target light */
+/* pulsing ring on the guide's current target light — it's the target's
+   actual hit area: tapping the ring selects that light */
 .guide-ring {
-  position: fixed; z-index: 7; width: 30px; height: 30px; margin: -15px 0 0 -15px;
+  position: fixed; z-index: 7; width: 44px; height: 44px; margin: -22px 0 0 -22px;
   border-radius: 50%; border: 1.5px solid var(--magenta);
-  pointer-events: none;
+  background: transparent; padding: 0; cursor: pointer;
   animation: ring-pulse 1.8s var(--ease-out) infinite;
 }
+.guide-ring:focus-visible { outline: 1.5px solid var(--magenta); outline-offset: 4px; }
+.guide-ring:active { animation-play-state: paused; border-color: var(--lit); }
 @keyframes ring-pulse {
   0% { transform: scale(0.6); opacity: 0.9; }
   70% { transform: scale(1.6); opacity: 0.25; }
@@ -360,5 +402,6 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 @media (prefers-reduced-motion: reduce) {
   .brand .pip, .dock .live-dot, .loading .pulse { animation: none; }
   .guide-ring { animation: none; opacity: 0.7; }
+  .sheet, .tray { animation: none; }
   .sheet, .tray, .guide-tip { transition-duration: 80ms; }
 }

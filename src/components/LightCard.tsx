@@ -15,6 +15,7 @@ export default function LightCard({
   onClose,
   onCopyLink,
   onSaveCard,
+  onHeightChange,
 }: {
   point: StorePoint;
   vesselNote: string | null;
@@ -25,6 +26,7 @@ export default function LightCard({
   onClose: () => void;
   onCopyLink: () => Promise<boolean>;
   onSaveCard: () => Promise<boolean>;
+  onHeightChange?: (h: number) => void;
 }) {
   const l = activeLight;
   const stripRef = useRef<HTMLDivElement>(null);
@@ -58,6 +60,33 @@ export default function LightCard({
   const cardRef = useRef<HTMLDivElement>(null);
   useEffect(() => { cardRef.current?.focus(); }, [point.id]);
 
+  // tell the map when our real height changes so the camera re-pads itself
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || !onHeightChange) return;
+    const ro = new ResizeObserver(() => onHeightChange(el.getBoundingClientRect().height));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [onHeightChange]);
+
+  // the grip is a real drag handle: pull down to peek, up to expand, tap toggles
+  const gripDrag = useRef<{ y: number; moved: boolean } | null>(null);
+  const onGripDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    gripDrag.current = { y: e.clientY, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, []);
+  const onGripMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    const g = gripDrag.current;
+    if (g && Math.abs(e.clientY - g.y) > 6) g.moved = true;
+  }, []);
+  const onGripUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    const g = gripDrag.current;
+    gripDrag.current = null;
+    if (!g) return;
+    if (g.moved) setPeek(e.clientY - g.y > 0);
+    else setPeek((p) => !p);
+  }, []);
+
   const flash = (set: typeof setLinkState) => (ok: Promise<boolean>) => {
     set("busy");
     ok.then((good) => {
@@ -68,7 +97,6 @@ export default function LightCard({
 
   const name = point.name ?? point.ref ?? "unnamed light";
   const sectored = point.lights.some((x) => x.sectors.length > 0);
-  const sectorMatch = l !== point.light;
   const tp = l.period > 0 && !reduced ? t / l.period : -1;
   const W = w - 4, H = 34, y = 15;
   let acc = 0;
@@ -90,11 +118,19 @@ export default function LightCard({
     >
       <div className="body">
         <button className="x" onClick={onClose} aria-label="close">✕</button>
-        <button
-          className="grip"
+        <div
+          className="gripzone"
+          role="button"
+          tabIndex={0}
           aria-label={peek ? "expand the light list entry" : "collapse it"}
-          onClick={() => setPeek((p) => !p)}
-        />
+          onPointerDown={onGripDown}
+          onPointerMove={onGripMove}
+          onPointerUp={onGripUp}
+          onPointerCancel={() => { gripDrag.current = null; }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPeek((p) => !p); } }}
+        >
+          <span className="grip" aria-hidden />
+        </div>
         <div className="lead">
           <h2>{name}</h2>
           {point.ref && <span className="ref">{point.ref}</span>}
@@ -103,13 +139,8 @@ export default function LightCard({
           {`${point.lat.toFixed(3)}° ${point.lat >= 0 ? "N" : "S"}, ${Math.abs(point.lon).toFixed(3)}° ${point.lon >= 0 ? "E" : "W"}`}
           {sectored ? " · sectored" : ""}
         </div>
-        <div className="from-bearing" aria-live="polite">
-          {sectorMatch && vesselBearing != null ? (
-            <>from your bearing <b>{Math.round(vesselBearing)}°</b> this light reads</>
-          ) : null}
-        </div>
         <div className="notation">{notation(l)}</div>
-        <div className="strip peekable" ref={stripRef}>
+        <div className="strip" ref={stripRef}>
           <svg viewBox={`0 0 ${w} ${H}`} aria-hidden>
             <line x1={0} x2={W} y1={y} y2={y} stroke="#16283a" strokeWidth={1} />
             {l.period > 0 && [...Array(Math.floor(l.period)).keys()].map((s) => (
@@ -141,8 +172,8 @@ export default function LightCard({
             )}
             {l.period > 0 && (
               <>
-                <text x={0} y={H - 2} fontSize={8.5} fill="#7f90a2" fontFamily="IBM Plex Mono, monospace">0s</text>
-                <text x={W} y={H - 2} fontSize={8.5} fill="#7f90a2" textAnchor="end" fontFamily="IBM Plex Mono, monospace">
+                <text x={0} y={H - 2} fontSize={10} fill="#7f90a2" fontFamily="IBM Plex Mono, monospace">0s</text>
+                <text x={W} y={H - 2} fontSize={10} fill="#7f90a2" textAnchor="end" fontFamily="IBM Plex Mono, monospace">
                   {l.period}s
                 </text>
               </>
@@ -174,7 +205,7 @@ export default function LightCard({
           </button>
         </div>
       </div>
-      {sectored && <Rose point={point} bearing={vesselBearing} onSteer={onSteer} peek={peek} />}
+      {sectored && <Rose point={point} bearing={vesselBearing} onSteer={onSteer} />}
     </div>
   );
 }
@@ -185,12 +216,10 @@ function Rose({
   point,
   bearing,
   onSteer,
-  peek,
 }: {
   point: StorePoint;
   bearing: number | null;
   onSteer: (deg: number) => void;
-  peek: boolean;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const R = 38, C = 50;
@@ -219,7 +248,7 @@ function Rose({
   const needle = bearing == null ? null : ((bearing - 90) * Math.PI) / 180;
 
   return (
-    <div className={`rose${peek ? " peekable" : ""}`}>
+    <div className="rose">
       <svg
         ref={svgRef}
         viewBox="0 0 100 100"
@@ -259,7 +288,7 @@ function Rose({
             />
           );
         })}
-        <text x={C} y={C - R - 10} fontSize={8} fill="#7f90a2" textAnchor="middle" fontFamily="IBM Plex Mono, monospace">N</text>
+        <text x={C} y={C - R - 10} fontSize={9.5} fill="#7f90a2" textAnchor="middle" fontFamily="IBM Plex Mono, monospace">N</text>
         {arcs.map((a, i) => (
           <path key={i} d={a.d} fill="none" stroke={a.col} strokeWidth={4.5} strokeLinecap="round" opacity={0.85} />
         ))}

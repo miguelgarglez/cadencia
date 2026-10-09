@@ -1,9 +1,12 @@
 // Canvas share card for a light: notation + coordinates + one frame of its pattern.
 import type { StorePoint } from "./data.ts";
+import type { Light } from "../iala.ts";
 import { colorHex, notation } from "../iala.ts";
 
-export function shareCard(p: StorePoint): Promise<boolean> {
-  const l = p.light;
+// `active` is the sub-light the vessel actually sees — the card records the
+// signal from that bearing, not just the primary light
+export function shareCard(p: StorePoint, active?: Light | null, bearing?: number | null): Promise<boolean> {
+  const l = active ?? p.light;
   const W = 1200, H = 630;
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H;
@@ -63,6 +66,20 @@ export function shareCard(p: StorePoint): Promise<boolean> {
       c.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
       c.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
       c.stroke();
+    }
+    // the observer's bearing: a vessel tick out on the rose rim
+    if (bearing != null) {
+      const a = ((bearing - 90) * Math.PI) / 180;
+      c.beginPath();
+      c.moveTo(Math.cos(a) * (rr + 12), Math.sin(a) * (rr + 12));
+      c.lineTo(Math.cos(a) * (rr + 34), Math.sin(a) * (rr + 34));
+      c.strokeStyle = "rgba(224,89,138,0.95)";
+      c.lineWidth = 3;
+      c.stroke();
+      c.fillStyle = "#e0598a";
+      c.font = "500 17px 'IBM Plex Mono', monospace";
+      c.textAlign = "center";
+      c.fillText(`${Math.round(bearing)}°`, Math.cos(a) * (rr + 52), Math.sin(a) * (rr + 52) + 6);
     }
     c.fillStyle = "#fff3cf";
     c.beginPath(); c.arc(0, 0, 4, 0, Math.PI * 2); c.fill();
@@ -132,7 +149,9 @@ export function shareCard(p: StorePoint): Promise<boolean> {
   c.fillStyle = "#5b6b7d";
   c.fillText(
     `${Math.abs(p.lat).toFixed(3)}° ${p.lat >= 0 ? "N" : "S"}  ·  ${Math.abs(p.lon).toFixed(3)}° ${p.lon >= 0 ? "E" : "W"}` +
-    (p.ref ? `   ${p.ref}` : ""),
+    (p.ref ? `   ${p.ref}` : "") +
+    (bearing != null ? `   ·   seen from ${Math.round(bearing)}°` : "") +
+    (l.inferred ? "   ·   approx" : ""),
     80, 350,
   );
 

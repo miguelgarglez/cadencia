@@ -16,6 +16,7 @@ export default function Guide({
   crossed,
   targetName,
   onFlyToTarget,
+  onTargetClick,
   onDone,
 }: {
   anchor: GuideAnchor | null;
@@ -24,21 +25,20 @@ export default function Guide({
   crossed: boolean;
   targetName: string | null;
   onFlyToTarget: () => void;
+  onTargetClick: () => void;
   onDone: () => void;
 }) {
   const [step, setStep] = useState(0);
 
-  // step 0 waits for any real interaction with the sea — pan, zoom, or click —
-  // then hands off. A still reader gets a fallback timer instead of a trap.
+  // step 0 hands off only on a deliberate press — a passing scroll shouldn't
+  // skip the lesson. A still reader gets a longer fallback timer.
   useEffect(() => {
     if (step !== 0) return;
     const advance = () => setStep(1);
     window.addEventListener("pointerdown", advance);
-    window.addEventListener("wheel", advance);
-    const t = setTimeout(advance, 7000);
+    const t = setTimeout(advance, 12000);
     return () => {
       window.removeEventListener("pointerdown", advance);
-      window.removeEventListener("wheel", advance);
       clearTimeout(t);
     };
   }, [step]);
@@ -51,7 +51,7 @@ export default function Guide({
   useEffect(() => {
     if (step !== 2) return;
     if (crossed) {
-      const t = setTimeout(onDone, 3200);
+      const t = setTimeout(onDone, 4200);
       return () => clearTimeout(t);
     }
     if (!vesselActive) {
@@ -81,7 +81,7 @@ export default function Guide({
       : vesselActive
         ? {
             k: "steer",
-            body: "Drag the vessel around the light, or drag the rose on the sheet. Watch the color change at each arc.",
+            body: "Drag the vessel — the color changes at each sector arc.",
           }
         : {
             k: "read",
@@ -95,12 +95,16 @@ export default function Guide({
   const pos = useMemo(() => {
     const vw = window.innerWidth, vh = window.innerHeight;
     const sheetTop = vh - (vw <= 640 ? 120 : 260); // keep clear of the sheet zone
+    // narrow screens: the tip pins under the wordmark — never over the
+    // light→vessel path it describes, never under the sheet
+    if (vw <= 640) {
+      return { left: "50%", top: 64, transform: "translateX(-50%)" } as const;
+    }
     if (!anchor || anchor.offscreen) {
       return { left: "50%", top: Math.min(vh * 0.28, sheetTop - 140), transform: "translateX(-50%)" } as const;
     }
     const W = Math.min(264, vw - 24), Hh = 130;
-    // narrow: above the target, or below if there's no headroom
-    if (vw <= 640 || anchor.x + 34 + W > vw - 12 && anchor.x - W - 34 < 12) {
+    if (anchor.x + 34 + W > vw - 12 && anchor.x - W - 34 < 12) {
       const top = anchor.y - Hh - 34 >= 66 ? anchor.y - Hh - 34 : anchor.y + 34;
       const left = Math.min(Math.max(anchor.x - W / 2, 12), vw - W - 12);
       return { left, top: Math.min(top, sheetTop - Hh) } as const;
@@ -115,7 +119,12 @@ export default function Guide({
   return (
     <>
       {anchor && !anchor.offscreen && step === 1 && (
-        <span className="guide-ring" style={{ left: anchor.x, top: anchor.y }} aria-hidden />
+        <button
+          className="guide-ring"
+          style={{ left: anchor.x, top: anchor.y }}
+          onClick={onTargetClick}
+          aria-label={targetName ? `select ${targetName}` : "select the marked light"}
+        />
       )}
       <div className="guide-tip" style={pos} role="status">
         <span className="k">{tip.k}</span>

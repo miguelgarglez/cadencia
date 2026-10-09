@@ -26,6 +26,7 @@ export default function Hud({
   onLight: () => void;
 }) {
   const [utc, setUtc] = useState("");
+  const [prefsOpen, setPrefsOpen] = useState(false);
   useEffect(() => {
     const f = () => {
       const d = new Date();
@@ -37,6 +38,18 @@ export default function Hud({
     const t = setInterval(f, 1000);
     return () => clearInterval(t);
   }, []);
+
+  // the signals popover closes on any outside press or Escape
+  useEffect(() => {
+    if (!prefsOpen) return;
+    const down = (e: PointerEvent) => {
+      if (!(e.target as HTMLElement).closest(".prefs-wrap")) setPrefsOpen(false);
+    };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setPrefsOpen(false); };
+    document.addEventListener("pointerdown", down);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", down); document.removeEventListener("keydown", key); };
+  }, [prefsOpen]);
 
   return (
     <>
@@ -62,23 +75,29 @@ export default function Hud({
         </span>
         <span className="sp" />
         <span className="cell utc" aria-hidden>{utc}</span>
-        <button
-          className={`cell ${haptics ? "on" : ""}`}
-          onClick={onHaptics}
-          aria-pressed={haptics}
-          title="haptic feedback on sector crossings"
-        >
-          haptics
-        </button>
-        <button
-          className={`cell ${sound ? "on" : ""}`}
-          onClick={onSound}
-          aria-pressed={sound}
-          title={sound ? "mute the sea" : "hear the sea"}
-        >
-          <span className="dot" aria-hidden />
-          sound
-        </button>
+        <span className="prefs-wrap">
+          <button
+            className={`cell ${sound || haptics ? "on" : ""}`}
+            onClick={() => setPrefsOpen((v) => !v)}
+            aria-expanded={prefsOpen}
+            aria-haspopup="menu"
+            title="sound and haptic signals"
+          >
+            signals
+          </button>
+          {prefsOpen && (
+            <span className="prefs-pop" role="menu" aria-label="signals">
+              <button role="menuitemcheckbox" aria-checked={sound} onClick={onSound}>
+                <i className={`sw ${sound ? "on" : ""}`} aria-hidden />
+                sound <b>{sound ? "on" : "off"}</b>
+              </button>
+              <button role="menuitemcheckbox" aria-checked={haptics} onClick={onHaptics}>
+                <i className={`sw ${haptics ? "on" : ""}`} aria-hidden />
+                haptics <b>{haptics ? "on" : "off"}</b>
+              </button>
+            </span>
+          )}
+        </span>
         <button
           className="cell"
           data-act="light"
