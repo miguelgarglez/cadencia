@@ -36,7 +36,12 @@ export class LightStore {
   }
 
   needBounds(w: number, s: number, e: number, n: number) {
-    const keys = cellsForBounds(w, s, e, n).filter((k) => !this.loaded.has(k) && !this.pending.has(k) && !this.failed.has(k));
+    const keys = cellsForBounds(w, s, e, n).filter((k) => {
+      if (this.loaded.has(k) || this.pending.has(k) || this.failed.has(k)) return false;
+      // the index knows which cells exist — never 404-hunt empty ocean
+      if (this.index && !(k in this.index.cells)) { this.loaded.add(k); return false; }
+      return true;
+    });
     for (const k of keys) {
       this.pending.set(k, this.fetchCell(k));
     }

@@ -6,3 +6,4 @@ pipeline/raw-lights.json
 .DS_Store
 .vercel
 _*.mjs
+.env*

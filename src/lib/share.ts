@@ -20,8 +20,8 @@ export function shareCard(p: StorePoint) {
 
   // the light's flash pattern as a glowing row of pulses
   const cy = 380;
-  const pattern = l.segs;
-  const total = pattern.reduce((a, s) => a + s.dur, 0);
+  const pattern = l.segs.length ? l.segs : [{ level: 1, dur: 1, color: 0 }];
+  const total = pattern.reduce((a, s) => a + s.dur, 0) || 1;
   const pxPerSec = (W - 280) / total;
   let x = 140;
   for (const s of pattern) {

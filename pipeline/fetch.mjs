@@ -20,6 +20,11 @@ const tiles = [];
 for (let s = LAT_MIN; s < LAT_MAX; s += TILE)
   for (let w = -180; w < 180; w += TILE)
     tiles.push([s, w, Math.min(s + TILE, LAT_MAX), w + TILE]);
+const rowsArg = process.argv.find((a) => a.startsWith("--rows="));
+if (rowsArg) {
+  const keep = new Set(rowsArg.slice(7).split(",").map(Number));
+  for (let i = tiles.length - 1; i >= 0; i--) if (!keep.has(tiles[i][0])) tiles.splice(i, 1);
+}
 if (process.argv.includes("--rev")) tiles.reverse();
 if (process.argv.includes("--revlon")) {
   // same rows, but walk longitudes east→west so two workers don't collide

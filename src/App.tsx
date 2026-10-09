@@ -419,7 +419,7 @@ function About({ onClose }: { onClose: () => void }) {
           </p>
           <p>
             Data © OpenStreetMap contributors (ODbL). Basemap © CARTO, OSM.
-            Built by <a href="https://github.com/miguelgarglez" style={{ color: "inherit" }}>@miguelgarglez</a> — source on GitHub.
+            Built by <a href="https://github.com/miguelgarglez" style={{ color: "inherit" }}>@miguelgarglez</a> — <a href="https://github.com/miguelgarglez/cadencia" style={{ color: "inherit" }}>source on GitHub</a>.
           </p>
         </div>
       </div>
