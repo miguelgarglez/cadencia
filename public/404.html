@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>off the chart — cadencia</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh; display: grid; place-items: center;
+    background: #04070c; color: #cfd8e3;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .card { max-width: 30rem; padding: 2rem; text-align: center; }
+  .rose {
+    width: 88px; height: 88px; margin: 0 auto 1.6rem;
+    display: grid; place-items: center;
+    border: 1px solid #22405a; border-radius: 50%;
+    animation: spin 24s linear infinite;
+  }
+  .rose span { color: #e0598a; font-size: 28px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .rose { animation: none; } }
+  h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: #e0598a; margin-bottom: 0.9rem; }
+  p { font-size: 12.5px; line-height: 1.65; color: #8fa3b8; margin-bottom: 1.4rem; }
+  a { color: #fff3cf; text-decoration: none; border-bottom: 1px solid rgba(255, 243, 207, 0.4); padding-bottom: 1px; }
+  a:hover { border-bottom-color: #fff3cf; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="rose"><span>&#10022;</span></div>
+    <h1>off the chart</h1>
+    <p>this bearing isn't on the list. No light answers here — head back to the sea and the signals will find you.</p>
+    <a href="/">return to the chart</a>
+  </div>
+</body>
+</html>
