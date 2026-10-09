@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseLights, parseCharacter, synthesize, notation } from "../src/iala.ts";
+import { parseLights, parseCharacter, notation } from "../src/iala.ts";
 
 const sum = (segs) => segs.reduce((a, s) => a + s.dur, 0);
 const litAt = (l, t) => {
