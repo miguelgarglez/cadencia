@@ -1,161 +1,136 @@
-# cadencia design review
+# Cadencia confirmation review
 
-Reviewed HEAD: `b31e71ad152bc86678f1a9a63e8a2207e2ac4bbd`  
-Verified with `git -C /Users/miguelgarglez/Developer/cadencia rev-parse HEAD`.  
-Review date: 2026-10-09. Verdict: **65/100. Not ready for a flagship portfolio slot.**
+Reviewed HEAD: `ed6c44727454c85230c44b04c039ce39292cfa28`.
 
-The underlying interaction deserves further work. The current presentation still fails to make its most distinctive behavior clear, and several claimed fixes are incomplete. Keep the chart-room identity. Fix the camera, sheet geometry, and interaction continuity before adding visual decoration.
+**69/100. Improved from 65/100. Not confirmed for a flagship portfolio.** The sector interaction has a stronger visual explanation and materially better steering. The remaining weaknesses are in the delivered experience: mobile occlusion, discontinuous sheet changes, premature guide states, and an export flow with unresolved lifecycle and placement problems. The underlying system deserves the attention; the finish does not yet meet the requested bar.
+
+This is a confirmation review, not another implementation round. No application code was changed, no dependencies were installed, and no servers were started.
 
 ## Context
 
-cadencia is an exploratory nautical-light instrument for curious visitors. The intended experience is quiet discovery, followed by understanding how a light changes with a viewer's bearing. A first-time visitor should not need nautical notation to discover that relationship.
+Cadencia is an exploratory nautical instrument for curious visitors. Its central task is to connect a light's charted signal with the observer's bearing. The emotional context is quiet discovery, with enough technical explanation to make the discovery meaningful. It should reward a casual first visit without requiring knowledge of IALA notation.
 
-I inspected all four current screenshots, all four previous-product heroes, and extracted chronological frames at one-second intervals from the supplied recording. The file named `first10.webm` actually lasts 16.64 seconds at 1440 × 900 and 25 fps. The first ten seconds show loading, the initial geographic approach, and the field guide; later samples show the next guide step. They do not demonstrate steering, sheet dragging, sharing, or a boundary crossing. Frame sampling establishes staging, not perceived frame-rate smoothness.
+Evidence reviewed: all four supplied review5 screenshots, the supplied recording, all four previous-product heroes, the critique method, taste.md, and the relevant source in App.tsx, components, index.css, geo.ts, lightField.ts, and share.ts. Recording inspection used extracted frames, including quarter-second samples around expansion, rather than live interaction. Haptics, physical touch latency, and browser download behavior were not exercised.
 
-Code inspection covered `src/App.tsx`, all three files in `src/components/`, `src/index.css`, `src/lib/lightField.ts`, and `src/lib/share.ts`. I also checked the installed MapLibre camera implementation for the padding behavior. No servers were started or dependencies installed, and I made no application-code changes. During final verification, an external uncommitted edit appeared in src/App.tsx that changes selection timing and guards padding during camera movement. I checked the cited camera behavior again with git show at the full reviewed SHA. That later working-tree edit is excluded from this review and its scores. Behavioral conclusions below distinguish code evidence from captured results.
+Two evidence qualifications matter:
 
-The brief calls the opening a world view, but the supplied hero is already a regional view of northwestern Europe. The dock shows 80,685 charted points. I do not treat the approximate 100,000-light description as a visual defect; points and individual light definitions can have different totals.
+- `first10.webm` is actually 19.16 seconds long, at 374 × 720 and 25 fps. Its first ten seconds show the opening flight and an invitation waiting for action. Selection and sheet expansion occur later. I inspected that later material too, but do not count it as first-ten-second spectacle.
+- HEAD is the commit titled "Rose steer cue on its own line". Its one-line CSS addition makes `.rose .cap .cue` a block with normal font style. The supplied selected screenshots and recording still show the cue inline and italic. The repository HEAD is verified; visual confirmation of that final CSS change is not. I credit the source fix and do not treat the old cue collision as a proven remaining HEAD defect. Its effect on mobile sheet height and map clearance is unverified.
+
+The previous numeric scores are supplied, but previous Cadencia captures are not part of this comparison. Claims of improvement below refer to confirmed implementation and the provided current material, not an invented visual before/after.
 
 ## First impressions
 
-The sea has an identifiable atmosphere. Its nearly black water, sparse colored lights, and restrained wordmark make the map feel like the product rather than a background illustration. The bright inland and coastal chains nevertheless merge into white strokes, while the intended first target has little visual priority. The selected desktop view is less convincing than the opening: Castle Pile remains in a broad regional scene, the sector boundaries are not legible at presentation scale, and a bright blue focus outline gives the sheet more visual weight than the phenomenon it explains. On mobile the rose finally sits beside the light information, but the strip is clipped. The purported expanded screenshot does not show an expanded state.
+The opening reads as a real chart, with geographically meaningful light concentrations and a restrained wordmark. The named Castle Pile action gives the visitor a concrete place to begin. It remains too recessive for a flagship first impression: much of the frame is nearly black, the ring surrounds a cluster that is hard to identify individually, and the guide's secondary action visibly escapes its panel. The selected state is stronger. Its active red sector, vessel, and chart star establish a recognizable interaction. On mobile, the expanded explanation hides the very point that gives that interaction meaning.
 
 ## Visual design
 
-**The timing strip has no room for its explanation.** In `selected.png`, the strip's zero label collides with the range metadata. Both mobile captures cut off the strip's lower ticks and endpoints. In `src/index.css:193`, `.strip` remains 34px high; its SVG consumes 100% of that height, while the verdict is an additional child above it. Give the explanation intrinsic height and the SVG its own 34px row. This is a layout defect, not a request for more padding everywhere.
+| Before, as evidenced | After, required improvement | Why |
+| --- | --- | --- |
+| `hero.png`: "skip the guide" extends beyond the guide's right border. `.guide-tip .row` is a non-wrapping flex row with two nowrap actions. | Wrap or stack the secondary action within the measured panel width. | The invitation should look deliberate before the visitor trusts the instrument. |
+| `mobile-expanded.png`: the guide covers the light's origin and the lower part of the sector fan. | Reserve space for the light, vessel, and connecting sector geometry together; collapse the tip once steering begins. | Keeping only the vessel visible does not preserve the explanation of bearing. |
+| `selected.png`: the active red sector has solid rays; neighboring inactive sectors have faint fills and dashed outer arcs without their own solid rays. | Draw subdued solid rays at every sector boundary and strengthen the active pair. | A visitor needs to see the boundary they are about to cross. |
+| `hero.png`: some dense coasts and waterways still form luminous threads, while isolated points are very faint. | Tune overlap handling separately from isolated-light visibility. | Global halo damping cannot simultaneously resolve stacked points and reveal sparse ones. |
+| Selected desktop and mobile sheets repeat bearing and notation in the rose, main line, and descriptive note. | Keep the signal reading prominent; show secondary metadata and repeated notation only when needed. | The current hierarchy spends scarce space explaining the same state twice. |
+| The guide dismissal, sector badge, and rose detail use very small, low-contrast text. | Increase contrast for actionable text and reserve the faintest treatment for nonessential chart decoration. | Secondary actions still need to be discoverable. |
 
-**The selection hierarchy is inverted.** The screenshots give the sheet a conspicuous browser-blue perimeter, while the meaningful sector arcs are difficult to see. `LightCard.tsx:65` focuses the dialog on selection, and the sheet has no dedicated focus styling. Keep accessible focus, but give keyboard focus a deliberate chart-compatible treatment and avoid a large pointer-triggered outline. Make the active boundary and selected signal the next strongest marks after the light name.
-
-**Dense lights still lose their identities.** The Netherlands and German waterways read as luminous threads in the hero. The halo damping exists, but it reaches full strength at zoom 6.5, close to the default settled zoom of 6.4. Additive blending also accumulates cores, which halo attenuation alone cannot solve. Tune overlapping-core brightness at the actual opening scale, and retain distinct color and flash changes in those clusters.
-
-**The typography has roles, but the small text is doing too much work.** Space Grotesk for the brand, Instrument Serif for the light name, and IBM Plex Mono for instruments form a coherent hierarchy. The issue is scale and content allocation: the mobile coordinate line competes for width with the rose, the explanatory verdict is tracked 11px mono, and the dock drops to 10.2px below 480px. Keep the complete live strip readable, shorten the primary explanation, and move coordinates into expanded detail when necessary.
-
-**The guide's primary action wraps awkwardly.** In the desktop hero, both "read Castle Pile" and "skip the guide" wrap across lines. This weakens the otherwise useful explicit entry action. Give the primary action one clear line and demote skip visually without reducing its hit area.
-
-The color semantics mostly hold: magenta marks selection and interaction, while red, green, and white belong to the lights. Hairline chart rules and the serif light title are appropriate. There is no reason to replace them with a new visual identity.
+Color has a purpose: magenta marks selection and instruments, red/green/white encode signals, and the dark blue base supports the chart. The three font families have distinct jobs. I would preserve them. Thin rules mostly organize the sheet well, and the timing scale no longer collides with metadata. The ship and chart star are more distinctive than another icon toolbar. The problem is the allocation of space and contrast, not a need for a new identity.
 
 ## Interface design
 
-We are missing an opportunity to make the signature interaction spatially obvious. The selected screenshots show the vessel and its leader, but not an easily understood band to cross. The rose contains three tiny neighboring colored arcs near north. A novice receives the instruction to cross a sector without a clear visible destination. Fit the light, vessel, and a useful sector boundary together before revealing the steering instruction.
+We are missing an opportunity to make selection read as one coherent event. The recording around 12–13 seconds shows the sheet first presenting Castle Pile's primary `Fl G 5s` signal and a "read" instruction, then changing to `Al RW 6s 17m 11M` and "steer" when the vessel arrives. The code explains the change: selection mounts the sheet before the vessel spawns, and the guide treats a temporarily absent vessel as a non-sector light. Prepare the observer state before showing the final reading, or explicitly represent the short preparation state.
 
-There is a concrete camera conflict. Selection requests zoom 9.5 through `easeTo` in `App.tsx:511`. The sheet's ResizeObserver then invokes `setPadding` through `App.tsx:891`. In the installed MapLibre implementation, `setPadding` calls `jumpTo`, and `jumpTo` calls `stop()` in `node_modules/maplibre-gl/src/ui/camera.ts:526` and `:843`. That path can stop the selection flight before it reaches its target. The new settled-camera polling does not restore the intended destination. This is a code-supported explanation consistent with the broad selected desktop capture, not a runtime trace of that capture.
+We are missing an opportunity to preserve the lesson while the sheet expands. The later recording frames show the rising sheet behind the still-positioned guide before the guide redocks. The expanded still then conceals the light origin. A measured sheet height alone is insufficient: camera, guide, fan origin, and vessel need a common reserved area.
 
-We are missing an opportunity to preserve the first-run invitation. The explicit CTA is present, but any window pointerdown advances step zero, as does a 12-second timeout. A user opening signals or touching the map can lose the named CTA without performing its intended action. The ring appears only in step one, so the first instruction and its geographic target are not simultaneously emphasized.
-
-We are missing an opportunity to explain the signal in ordinary language. The honest approximation verdict is welcome. It needs to sit beside an intact strip and a concise reading such as "alternates red and white; full cycle 12 seconds." Keep the tagged notation available. The rose's "drag to steer" cue is conditional on a null bearing, so it disappears once the vessel actually exists.
-
-We are missing an opportunity to make sharing a considered result. The code downloads immediately, then reveals a thumbnail for five seconds. That is post-download feedback, not preview before download. On mobile, the thumbnail is positioned above a sheet with `overflow-y: auto`, creating an additional clipping risk. Render a preview outside the scroll container, then provide an explicit download action.
+We are missing an opportunity to make sharing a dependable conclusion. Preview-first is present, but the preview is still a descendant of the sheet. Desktop `.sheet` has a transform; all sheets declare `will-change: transform`, and mobile sheets scroll. A fixed child is therefore not reliably a viewport-level overlay just because its CSS says `position: fixed`. Its `bottom` value is calculated in viewport coordinates. This is a source-established placement risk, not a visually tested export failure. In addition, share.ts revokes the blob URL after 60 seconds even while the save action remains available.
 
 ## Consistency and conventions
 
-The map stays visible behind sheets and trays, and actions are mostly small lowercase text links. This supports the instrument metaphor. The exact banned row of outlined uppercase monospace rectangular buttons is **absent**. The footer has rectangular divided cells, but they are lowercase dock controls, not the banned standalone button row.
+The banned row of outlined uppercase monospace rectangular buttons is **absent**. The footer is a continuous instrument dock with lowercase labels and separators. Sheet actions are lowercase text links with bottom rules. The outlined "sectored" label is a badge, not a button. Neither should be misclassified as the banned pattern.
 
-| Before | After | Why |
-| --- | --- | --- |
-| Grip movement translates the whole sheet, then hiding/showing content changes its intrinsic height immediately. | Drive a measured sheet height or offset between two detents; retain the current position and release velocity through settling. | Finger tracking alone does not make the final transition continuous. |
-| Grip and rose cancellation clear drag state without checking the pointer ID. | Verify the owning pointer on cancel and handle lost capture explicitly. | A secondary pointer must not cancel the active manipulation. |
-| The sheet creates its own WebHaptics instance and triggers it directly. | Route sheet detents through the existing preference-aware haptic callback. | "Haptics off" must apply to every control. |
-| Signals closes on Escape but does not restore focus to its trigger. | Return focus to signals after keyboard dismissal. | Topmost-layer dismissal needs a predictable keyboard destination. |
-| Bearing values, notation, share labels, and guide text are replaced directly. | Preserve stable text and transition only changed values; provide an immediate reduced-motion alternative. | The changing signal is the main learning event and should remain easy to follow. |
+The rose and vessel both accept arrow keys, and the rose preserves its grab offset. The signals menu now returns focus to its trigger on Escape and stops the dismissal from reaching the underlying selection. These are real improvements.
 
-The vessel itself has useful foundations: a 44px hit area, pointer capture, grab offsets, and keyboard steering. Its up/cancel handlers verify the owning pointer. The sheet and rose do not have the same cancellation discipline.
-
-The rose also reports geographic bearing but sends an angle into a screen-space orbit calculation in `App.tsx:546`. The improved spawn validates geographic bearing, but steering still mixes those coordinate systems. At close zoom the difference may be small; use one bearing convention through input, vessel placement, rose, and sector lookup.
+Sheet and text transitions are less consistent. Counts use NumberFlow, while bearing digits and action labels swap directly. Notation and prose use keyed whole-element fades. Re-keying the bearing sentence on every change can repeatedly restart its opacity animation during steering. This does not meet the taste requirement that stable text stay put while only changing content morphs.
 
 ## User context
 
-A curious visitor has little investment in learning abbreviations before something rewarding happens. The opening field earns attention, but the product then asks that visitor to interpret a narrow rose, locate a small vessel, and understand an approximation warning in separate places.
+The visitor can now understand what to try without deciphering a generic map. Castle Pile is named, clickable, and associated with a visible ring. That helps curiosity turn into action. But the expanded mobile view asks the visitor to infer an origin hidden behind instructional copy. The most useful care here would be to keep the light, vessel, and boundary visible at every detent, then shorten the explanation after the first successful crossing.
 
-Uncommon care here means showing one readable change at the point of steering, then explaining it in the sheet. Preserve the current UTC phase when the active signal changes. Do not add easing to the actual scientific flash timing; animate the surrounding explanation instead.
+The product accurately labels inferred rhythm as "approx" in the sheet. That qualification deserves the same consistency outside charted sectors: the note says the light would not help, while `activeLight` and export fall back to the primary light. A recorded observer state should not quietly become a different signal when there is no active sector.
 
-Copy must also remain consistent about inference. The sheet says "approx," while another guide path says "the light's true rhythm." The crossing message declares that the ship has left safe water after any color change, although the guide does not evaluate a safe-water state. Describe the charted sector change itself. This is a critique of what the application knows and claims, not an assessment of navigation suitability.
+## Confirmation of the requested fixes
 
-## Scores and the three changes required for each score below 8
-
-Scores assess the supplied result. Code earns credit for implemented mechanics, but does not substitute for demonstrated gesture quality.
-
-| Axis | Score | Reason | Three concrete changes to reach 8 |
-| --- | ---: | --- | --- |
-| First impression | 7 | Distinct sea and restrained branding; the first target and action are weaker than the bright density clusters. | 1. Mark Castle Pile while the initial CTA is visible. 2. Keep the named CTA on one line with a clearly secondary skip action. 3. Reduce merged white cores at the settled opening zoom. |
-| Signature moment | 7 | Bearing-dependent rhythm and color are a strong idea, but the selected captures do not explain the boundary spatially. | 1. Complete the selection flight without resize padding cancelling it. 2. Frame a legible boundary with the vessel already beside it. 3. Link crossing feedback across boundary, map signal, and a plain-language signal readout. |
-| Feel of direct manipulation | 6 | Vessel offsets and capture are sound; the sheet only tracks translation, and the geographic angle convention is inconsistent across controls. | 1. Make detent geometry and release velocity continuous. 2. Apply pointer ownership to grip/rose cancellation and lost capture. 3. Make rose steering place the vessel at the requested geographic bearing. |
-| Spectacle | 7 | Thousands of independently changing lights create scale; dense white chains and the weak selected composition limit it. | 1. Preserve separate cores in dense waterways. 2. Make a selected sector fan readable against the field. 3. Stage the initial overview-to-local transition around one visible rhythm without changing its UTC phase. |
-| Motion quality | 6 | The sampled opening has deliberate staging, but sheet height swaps and vessel refits have discontinuous code paths. | 1. Give one camera operation ownership of selection and measured padding. 2. Settle sheet detents with an interruptible, velocity-aware transition. 3. Animate necessary vessel refits and changing explanatory text, with reduced-motion alternatives. |
-| Micro-interactions | 6 | Press states and Escape handling improve; preview order, focus return, and haptic preferences remain incomplete. | 1. Preview before downloading, outside the mobile scroll container. 2. Honor haptics-off for grip detents. 3. Restore popover trigger focus and use intentional sheet focus styling. |
-| First-run guidance | 7 | A real named CTA and better mobile docking are meaningful improvements; unrelated input still advances the lesson. | 1. Keep step zero until its own action or deliberate dismissal. 2. Show a usable sector boundary and a persistent rose steering cue before asking for a crossing. 3. Make completion copy describe the observed change and retain approximation honesty. |
-| Typography and layout | 6 | The three typefaces have distinct jobs; strip collisions, clipped labels, and tiny dock type are unresolved. | 1. Separate the verdict and fixed-height SVG into independent layout rows. 2. Restore the 10.5px dock minimum at every breakpoint and simplify mobile labels where needed. 3. Reduce compact-state coordinate weight and give the primary signal description normal reading spacing. |
-| Originality versus stock | 7 | A 9-point underlying concept with two concrete previous-product matches, detailed below. | 1. Differentiate the Nullius-like chart-plus-callout composition through an integrated live light-list instrument. 2. Make the shared-clock presentation visibly unlike Antipoda's dark geographic instrument, using nautical sequence and bearing behavior rather than another glowing dial as the main reward. 3. Carry the observed sector crossing into the exported artifact, so its distinctive mechanism survives outside the map. |
-| Mobile | 6 | The compact grid improves usable map space, but the strip clips and the supplied expanded capture proves no expansion. | 1. Keep the entire strip and both endpoints inside peek at 375px. 2. Produce a real expanded detent with metadata, vessel note, and actions visible or clearly scrollable. 3. Make sheet, guide, vessel refit, and preview respond as one measured layout with continuous gesture settling. |
-
-**Total: 65/100.** The prior review is described as 65/100, but its ten supplied axis scores add to 63. Relative to those individual scores, first-run guidance rises from 6 to 7 and mobile from 5 to 6. The other axes stay unchanged. I have not added points merely because a fix was described as shipped.
-
-## Verification of every claimed fix
-
-"Landed" below means the implementation is present; it does not imply live interaction testing.
-
-| Claimed fix | Finding at this HEAD |
-| --- | --- |
-| Compact mobile grid with text left, rose right, full-width strip, secondary detail below | **Landed structurally and visible.** CSS grid areas and `display: contents` place the rose beside the head. **Result incomplete:** strip endpoints are clipped. The expanded image has the same visible sheet extent and does not show metadata, note, or actions. |
-| Grip follows the finger with capture and a drag threshold | **Landed in code.** Capture, 4px movement threshold, and direct translateY updates exist. No gesture recording demonstrates the feel. Translating the whole compact sheet does not reveal expanded content during the pull. |
-| Directional detents and haptic settle | **Partial.** 60px distance and 0.35px/ms velocity conditions exist. Height changes by content visibility, not an animated detent. Velocity uses the last pointermove-to-pointerup delta, which can be zero even after a fast movement. Detent haptics bypass the global preference. |
-| Up/leave/cancel all verify pointer ID | **Not true across controls.** Grip up checks ID; grip cancel does not. Rose up checks ID; rose cancel does not. Neither has a leave handler. Pointer capture can make leave handling unnecessary, but it is not the claimed implementation. Vessel up/cancel both check ID. |
-| Spawn prefers real geographic bearings in charted sectors | **Landed.** `App.tsx:294` unprojects each candidate and tests `bearingDeg` before selecting it. It deliberately falls back to out-of-sector candidates if no clear in-sector spot exists. |
-| Spawn waits for actual camera settle | **Partial.** Polling uses `isMoving()` and a 950ms floor, or 60ms with reduced motion. After 2200ms it spawns regardless. More importantly, padding can stop the flight early; stopped is not the same as arrived. |
-| 200px mobile top padding while guide is up | **Landed.** Present in selection, height measurement, and settle callbacks. The mobile vessel and selected point are clear of the docked tip in the supplied captures. |
-| Sheet settle re-fits vessel | **Landed in code.** A 340ms callback calls `refitVessel`. It changes geographic position immediately when obstructed; no captured sequence verifies continuity or preservation of the user's bearing. |
-| Step-zero "read Castle Pile" action selects target | **Landed.** Visible in the hero and wired to select the resolved target. Global pointerdown and the timeout still advance away from it independently. |
-| Mobile guide docks above selected sheet; otherwise top-center | **Landed.** The selected mobile capture shows the bottom-left placement. Code uses measured sheet clearance and top-center before selection. |
-| Guide positional easing removed | **Landed.** The tip only transitions opacity; position follows its anchor directly. |
-| Alternating-signal vessel note | **Landed and visible.** Desktop copy says red/white, alternating and includes the active notation. |
-| Approximation verdict explains full cycle beside strip | **Landed in copy, failed in layout.** The 12-second explanation is visible, but its height is not included in strip geometry. |
-| Card preview thumbnail before download | **Not landed as described.** `share.ts:170` clicks the download link before resolving the URL. `LightCard.tsx:243` then sets the thumbnail. This is an after-download receipt. Mobile overflow can clip the above-sheet preview. |
-| Escape respects topmost signals layer | **Landed for signals versus underlying selection/about.** The document listener stops propagation before the window handler. Trigger focus restoration remains absent. A complete ordering of every possible overlay combination is not demonstrated. |
-| Preferences pressed states | **Landed in code.** `.prefs-pop button:active` adds background and scale feedback; checked semantics and switch visuals exist. |
-| Single error surface for link misses | **Landed.** The data-error/link-miss ternary renders one error tray, with data failure taking priority. |
-| Dock floor raised to 10.5px | **Partial.** The 640px breakpoint sets 10.5px; the later 480px rule overrides it to 10.2px. |
-| "Drag to steer" cue added to rose | **Partial and ineffective in the captured selected state.** The cue appears only when bearing is null. Once the vessel spawns, it is replaced by the bearing, as both selected screenshots show. |
-| Zoom-damped halo with smoothstep 2.5 to 6.5 | **Landed.** Both shader stages carry `v_damp`. The captured dense clusters still merge; the default 6.4 zoom is almost at full halo intensity and additive cores remain. |
-
-## Taste rule violations
-
-These are findings against the seven numbered product rules in `taste.md`. Rule 3 is not broken by the supplied primary flows. The others have concrete remaining violations.
-
-| Rule | Place and evidence | Fix |
+| Claim | Finding at reviewed HEAD | Evidence and limit |
 | --- | --- | --- |
-| 1. One thing at a time | Selected mobile screen gives persistent prominence to coordinates, encoded notation, an approximation paragraph, the rose, and a separate steering lesson, while the actual timing endpoint is clipped. | Make the compact task "steer and read this signal." Keep the complete strip, a concise current-signal reading, and the rose. Reveal coordinates and detailed inference explanation in expanded detail. |
-| 2. Nothing teleports | `LightCard.tsx` replaces notation, bearing text, and action labels directly. `Guide.tsx` swaps step content. Peek hides content with display:none; `refitVessel` moves geographic position directly. | Keep stable text and animate changed tokens; measure and animate detent geometry; preserve or visibly transition the vessel during layout-driven refits. Do not interpolate the real signal's on/off events. |
-| 4. Spend delight on the curve | The rare sharing event downloads before showing its thumbnail. The crossing completion primarily swaps explanatory text, while the meaningful boundary is weak in the selected captures. | Make sharing a persistent preview with an explicit save action. Give the first successful crossing a brief, spatially connected acknowledgment at the crossed boundary and its explanation. |
-| 5. Touch has feedback | The new grip creates WebHaptics directly in `LightCard.tsx:79–111`, outside App's haptics-on guard. Disabling haptics therefore does not disable this snap feedback. | Inject the existing preference-aware callback and use it for every detent. Existing visual press states deserve credit; the defect is inconsistent user control over touch feedback. |
-| 6. Same polish everywhere | The selected view has strip/metadata collisions and a browser-blue sheet perimeter; mobile clips the signal scale. Preview has a clipping risk. Settings lacks keyboard focus return. | Apply the same measured layout and intentional focus treatments to sheet, preview, and settings. Verify each secondary state at the target width, including actual expanded content. |
-| 7. Small, sharp parts with correct reduced motion | `flyToGuideTarget` in `App.tsx:727` always requests a 2400ms camera ease, unlike other reduced-motion-aware camera paths. Grip/rose cancellation and shared preferences differ between components. | Make this guide flight respect reduced motion, and use consistent pointer ownership and haptic routing across the small interactive controls. |
+| Geographic steering end-to-end, including refits | **Partial.** Rose and arrow keys are geographic and preserve distance. Refits are not constant-distance orbits. | App.tsx `steerVesselTo`, line 569, uses haversineKm and destPoint. `refitVessel`, lines 659–688, chooses a projected screen candidate and linearly interpolates latitude and longitude. Direct vessel drag intentionally follows the pointer through unproject. The broad "end-to-end" claim overstates what landed. |
+| Solid boundary rays at every sector edge | **Partial.** Both edges of the active sector are solid. Inactive sectors do not receive boundary rays. | App.tsx line 416 gates the rays on `isActive`; selected and mobile screenshots agree. This is a visible improvement over a fill alone, not completion of "each sector edge." |
+| Spawn just inside the widest sector edge | **Landed as a preference, not a geographic invariant.** | App.tsx line 311 uses end minus min of 5 degrees and 22 percent of width, with fallback candidates. Candidate positions use screen-angle sin/cos, then test geographic sector membership. The screenshots show the vessel beside the active boundary at about 353 degrees. |
+| Vessel refit glides for 380ms | **Landed in code, with limits.** | App.tsx lines 676–688 implement a cubic ease over lat/lon. Bearing, active signal, and palette are applied only at the end, so a refit crossing can temporarily show stale signal state. The recording does not isolate this glide sufficiently to certify its feel. |
+| Finger-tracked grip, velocity-aware detents, haptic at each crossing, single pointer ownership | **Partial.** Continuous transform, release velocity, directional thresholds, capture, and pointer ID checks landed. | LightCard.tsx lines 79–141. Haptics occur on tap or release when the selected detent changes, not as each threshold is crossed during movement. Up, cancel, and lost capture end the gesture; leaving the hit area is handled through capture. `setPeek` instantly adds/removes rows before transform settle, so height continuity is not solved. The end callback also has both a transition listener and an uncancelled timeout. |
+| Timing labels separated; verdict immediately below notation | **Landed, with responsive qualification.** | Separate verdict and SVG rows in LightCard.tsx; all selected stills show clear separation from metadata. Desktop puts the verdict directly below notation. Mobile puts it below the combined title/rose row, with substantial intervening height. |
+| Preview before download, explicit save/dismiss, active sector and bearing on card | **Core flow landed in code; complete presentation not confirmed.** | share.ts returns URL/filename; LightCard.tsx downloads only from "save png". App passes the seen light and bearing; share.ts highlights the matching sector of that light. No supplied preview or exported card proves the rendering. The transformed ancestor and 60-second URL expiry remain. Outside-sector fallback also records the primary signal. |
+| Guide waits for its own action; ring visible from step 0; honest crossing copy | **Mostly landed.** | Guide.tsx has no incidental global advance; the ring renders for step 0 and the primary action selects the target. It also advances when any light is selected, not exclusively its named action. Crossing text refers to color and boundary. Recording confirms it waits through the first ten seconds. Temporary "read" before "steer" remains. |
+| Escape restores signals-trigger focus | **Landed in code.** | Hud.tsx focuses `.prefs-wrap > button` and stops propagation on Escape. No keyboard recording was supplied. |
+| Stronger low-zoom halo damping | **Landed; visual outcome only partly resolved.** | lightField.ts uses smoothstep over zoom 3.5–10, a 0.25 halo floor, and 0.62 overall intensity floor. Individual cores survive in much of the hero, but bright merged threads remain in dense areas. |
+| Final rose cue separation | **Landed in code; screenshot mismatch.** | HEAD adds `.rose .cap .cue` at index.css line 262. The provided pixels do not show it. Credit the implementation without inventing visual verification. |
 
-Rule 3, "Context survives," passes in the observed main flows: sheets, settings, and about content overlay the chart. The missing continuity belongs under rule 2 rather than being counted twice.
+## Scores and the changes needed to reach 8
 
-Additional guidance in the taste file also favors spring-based drag settling and trigger-related popover motion. The sheet's current intrinsic-height swap and instantly unmounted settings popover fall short of that guidance. Neither a new animation dependency nor a specific library is required to repair them. The use of a real dataset, changing output, and restrained chart materials satisfies the file's broader concept filter.
+Scores describe the delivered evidence, with source credit where appropriate. They are not a feature count or a promise about unobserved interaction quality. Each sub-8 axis has exactly three concrete changes below.
+
+| Axis | Previous | Now | Judgment and three changes where required |
+| --- | ---: | ---: | --- |
+| First impression | 7 | **7** | A credible instrument with a weak opening hierarchy. 1. Keep both guide actions inside the panel at every width. 2. Add a small readable target label beside the Castle Pile ring so it resolves to one place within the cluster. 3. Make a few isolated light cores readable during the opening flight without raising the whole coastline's bloom. |
+| Signature moment | 7 | **8** | Real bearing controls a charted signal, active fan, notation, and map palette. Solid active rays and near-edge spawn make the causal idea legible. This earns 8 for the demonstrated design and implementation, not a claim of physically tested haptics or perfect motion. |
+| Feel of direct manipulation | 6 | **7** | The rose orbit and grab offsets are substantial improvements. 1. Preserve rendered sheet position when changing detents, including changing content height. 2. Make refits use the same geographic orbit and update the active signal throughout movement. 3. Cancel refits when rose or keyboard steering begins, so automatic movement cannot overwrite deliberate input. |
+| Spectacle | 7 | **7** | The illuminated coastlines have scale; the active fan is still small and visually fragile. 1. Separate dense overlapping light cores instead of relying only on global dimming. 2. Draw all boundary rays with a clear active/inactive hierarchy. 3. Compose the selected camera around the complete light-to-vessel geometry so its most expressive element stays visible on mobile. |
+| Motion quality | 6 | **7** | Opening camera movement and pointer tracking have intention; state handoffs remain discontinuous. 1. Remove the temporary primary-signal and "read" state before observer spawn. 2. Coordinate sheet, guide, and camera through a single interruptible expansion transition. 3. Keep stable text mounted and transition only changing notation, bearing, and action fragments. |
+| Micro-interactions | 6 | **7** | Focus restoration, press styles, and explicit save are present. 1. Emit one haptic per actual detent threshold transition, with reversal handling. 2. Keep the share URL valid until replacement, dismissal, or unmount. 3. Give the share preview its own focus entry and Escape return path instead of allowing Escape to dismiss the underlying selection. |
+| First-run guidance | 6 | **7** | A real named destination and action-gated opening are stronger. 1. Fit the action row within the guide. 2. Treat vessel preparation as a separate state rather than briefly claiming a non-sector reading. 3. Collapse or relocate the steering tip so it never hides the light origin or boundary being taught. |
+| Typography and layout | 6 | **6** | The type roles are sound and the strip collision is fixed; guide overflow, low-contrast small text, and redundant readings still reduce clarity. The final cue CSS earns code credit but has no matching capture. 1. Make the mobile title/rose grid compact after the cue wraps, keeping the verdict close to notation. 2. Increase actionable secondary-text contrast and provide room for wrapping. 3. Remove repeated notation from the bearing prose and tuck range/height behind expansion. |
+| Originality versus stock | 7 | **7** | Concept baseline 9 minus two concrete previous-product matches, detailed below. 1. Make the observer crossing the dominant composition rather than a small overlay on the familiar map hero. 2. Give the timing strip a visibly nautical signal-reading treatment distinct from Antipoda's horizontal tuning instrument. 3. Make the exported result an observer's bearing record with the actual sector context, rather than principally a name-and-notation card. |
+| Mobile | 5 | **6** | Peek and expanded states exist and retain the vessel, but expanded guidance hides the light and the transition briefly overlaps the sheet. 1. Solve the entire light/vessel/guide/sheet layout at both detents and through the transition. 2. Shorten the peek header and metadata so the rhythm stays close to the name while preserving touch targets. 3. Put export preview in a viewport-level layer, constrain it to the remaining space, and verify save/dismiss with the sheet expanded. |
+
+Total: **69/100**, an increase of **4 points**. No rounding or weighting is applied.
+
+## Taste.md rule audit
+
+These are the evidenced breaks, with location and fix. Repeated symptoms are grouped rather than counted as separate rules.
+
+| Rule | Place and break | Fix |
+| --- | --- | --- |
+| 1. One thing at a time | Expanded mobile shows the guide, two steering interfaces, notation, verdict, coordinates, timing, range, height, repeated bearing prose, and sharing. The guide remains visually dominant over the active lesson. | During the lesson, prioritize the visible crossing and a short reading. Collapse instructional copy after engagement; defer secondary facts. |
+| 2. Nothing teleports | LightCard changes row display immediately at detent release. Guide copy changes from read to steer after vessel creation. Keyed `.val` fades replace complete text; action labels and bearing values swap. | Preserve geometry across sheet state changes and coordinate the guide's movement. Morph only changed text fragments. Settle selection on its intended observer state before revealing the final reading. |
+| 3. Context survives | The expanded mobile guide hides the selected light origin. The share preview is nested beneath a transformed sheet despite viewport-based positioning. | Reserve the whole interaction geometry, not just the vessel's hit box. Portal the preview into a viewport-level layer that retains the selected chart context. |
+| 5. Touch has feedback | Grip movement has no detent-crossing feedback; LightCard only nudges after release or tap. Rose press only changes cursor, which does not provide a touch-visible acknowledgement. | Track detent crossings during movement with one nudge per change. Give rose pickup an immediate visible needle/rim response without adding latency to the bearing. |
+| 6. Same polish everywhere | The recording's loading subtitle extends beyond the narrow viewport. The guide action row overflows. Export has no supplied visual verification and its source has an expiring live save URL and ancestor-positioning problem. | Constrain loading copy with responsive padding and wrapping; contain guide actions; give export the same layout and lifecycle care as the chart. |
+| 7. Small, sharp parts, including correct reduced motion | Field calm mode and the strip's reduced-motion flag are sampled at initialization. They do not subscribe to preference changes while the page stays open, while CSS does respond. This produces inconsistent reduced-motion behavior across the same interface. | Use a shared live media-query subscription for the field, strip, and camera behavior. Keep the existing restrained reduced-motion rendering. No additional animation library is required. |
+
+Rule 4, "Spend delight on the curve," is not a confirmed violation. The geographic first-run reveal, crossing pulse, optional sound, and share record allocate special treatment to meaningful events. Their execution has shortcomings covered above; lack of confetti is not a defect. Sound is off by default and haptics can be disabled. Dependencies are few and relevant; their mere presence is not a rule-7 violation.
+
+The related "text morphs too" instruction is broken in the changing labels described under rule 2. The drag-spring preference is not met by the duration-based sheet settle, and the popover enters by translation rather than growing from its trigger. These are craft gaps, not reasons to delay true signal changes or soften the factual flashing rhythm.
 
 ## Originality comparison
 
-Underlying concept: **9/10** before similarity deductions. The combination of real light definitions, a shared replay phase, and a vessel changing the active signal by bearing has depth beyond a themed generator.
+The underlying idea starts at **9/10**: real tagged nautical rhythms on a common clock, with an observer changing the visible signal, is a substantive interactive system. The following two distinct compositional matches cost one point each. Related parts of the same match are not charged repeatedly.
 
-I count two identifiable cross-product matches. Each costs exactly one point. Related details within the same visual construction are grouped once rather than penalized repeatedly.
-
-| Previous hero | Matching construction in cadencia | Deduction |
+| Previous hero | Concrete resemblance | Deduction |
 | --- | --- | ---: |
-| Nullius | A full-bleed nautical chart acts as the main interface; a small upper-left identity and thin-bordered floating text annotation sit directly over geographic content. Cadencia's darker palette and real signals distinguish it, but the chart-plus-callout composition is a clear family resemblance. | -1 |
-| Antipoda | A nearly black geographic instrument uses glowing real-world phenomena, dim monospace measurements, hairline scales, and sparse peripheral controls. Cadencia's timing strip and bearing instrument repeat that instrument-first visual grammar, despite a different map and signal system. | -1 |
+| Nullius | An edge-to-edge nautical map is the main composition, with a compact upper-left identity, small floating chart annotations, hairline panel boundaries, and peripheral instrument information. Cadencia's real lights and dark palette differ, but the map-plus-floating-chart-entry arrangement recurs. | -1 |
+| Antipoda | A geographic phenomenon is presented as a dark precision instrument, paired with fine tick marks and a horizontal moving indicator. Cadencia's timing strip and technical readouts reuse that instrument arrangement at a smaller scale. The rhythm and bearing interaction remain its own. | -1 |
 
-**Originality score: 9 - 2 = 7/10.**
+**Originality score: 9 - 2 = 7.**
 
-Nightcap also has a dark background, fine rules, small mono annotations, and an upper-left identity. Those generic traits alone do not establish an additional recognizable borrowed construction: its dominant rounded daily timeline, stacked drink cards, ghost, and lunar controls are absent here. No extra match is counted.
+Nightcap has no additional distinctive match: its rounded indigo drink cards, ghost, vertical daily schedule, and whimsical display wordmark are absent. A dark background and small monospace readouts alone do not constitute another composition. Laureate has no additional distinctive match: its paper diploma, medal, wax seal, centered serif title, and ceremonial material treatment are absent. Saving a card is a common capability, not a copied hero element.
 
-Laureate's centered ceremonial composition, parchment, medal, wax seal, and press are absent. Its ordinary underlined secondary actions do not make cadencia's action links a copied product element. No match is counted.
-
-The banned outlined uppercase monospace rectangular button row is absent in both screenshots and the relevant CSS. Cadencia's own magenta selection star, chart-room colors, type roles, and previous internal iterations are not separate originality penalties. Do not redesign the established identity to chase novelty; differentiate how the nautical behavior is presented.
+Across the four references, serif text, monospace numbers, thin rules, and restrained backgrounds recur at the level of general visual vocabulary. Those are not separately penalized. Cadencia retains its own established magenta selection, Morse lockup, chart star, signal colors, and chart-room font roles. The originality deduction is for the two compositional matches above, never for resembling earlier Cadencia.
 
 ## Top opportunities
 
-1. Resolve the camera-padding conflict so selection reliably arrives at a useful sector view before the steering lesson begins.
-2. Repair the strip's intrinsic layout, then capture genuinely distinct 375px peek and expanded states with complete timing and accessible actions.
-3. Make sheet settling continuous and unify pointer ownership, bearing conventions, and haptic preferences across the vessel, grip, and rose.
-4. Preserve the named first-run action until the user takes it, and teach the first boundary crossing through a visible boundary and plain-language signal change.
-5. Put the share preview before download and keep it outside mobile overflow, with focus and feedback matching the main interface.
+1. Make mobile expansion preserve the visible light-to-vessel relationship through the entire gesture.
+2. Finish the geographic steering claim by unifying refit geometry, cancellation, and live signal updates.
+3. Make initial selection a single understandable handoff instead of briefly showing a different signal and instruction.
+4. Finish sharing as a viewport-level, focus-aware preview whose save action remains valid.
+5. Contain the guide actions and obtain captures that actually show the final rose-cue CSS.
+
+The confirmed gains are specific: geographic rose/key steering, near-boundary spawn, active rays, separated timing rows, preview-first sharing, and signals-menu focus restoration. They lift this to 69. The unresolved interaction continuity and mobile composition prevent flagship confirmation.

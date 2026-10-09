@@ -254,6 +254,9 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 }
 .rose svg { display: block; cursor: grab; touch-action: none; }
 .rose svg:active { cursor: grabbing; }
+/* pickup is acknowledged on the instrument, not only in the cursor */
+.rose.grabbed svg { filter: drop-shadow(0 0 7px rgba(224, 89, 138, 0.45)); }
+.rose.grabbed .cap { color: var(--magenta); }
 .rose .cap {
   font-family: var(--font-mono); font-size: 10.5px; color: var(--faint);
   letter-spacing: 0.14em; text-align: center; margin-top: 4px;
@@ -318,18 +321,27 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
   .sheet .gripzone { display: none; }
 }
 
-/* the export preview floats above the sheet, outside its scroll box — the
-   download happens on the card's own action, after you've seen it */
-.cardpeek {
-  position: fixed; right: 12px; z-index: 40;
-  width: 220px; background: rgba(6, 11, 18, 0.97); border: 1px solid var(--hairline);
-  border-radius: 3px; padding: 6px;
-  animation: prefs-in 200ms var(--ease-out);
+/* rows appearing at a detent change arrive softly instead of popping in */
+.sheet.settling .peekable { animation: val-in 240ms var(--ease-out); }
+
+/* the guide's target label: the ring marks *this* light, the tag names it */
+.guide-tag {
+  position: fixed; z-index: 7; transform: translate(-100%, -50%);
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em;
+  color: var(--lit); background: rgba(6, 11, 18, 0.85);
+  border: 1px solid rgba(224, 89, 138, 0.4); border-radius: 2px;
+  padding: 3px 7px; cursor: pointer; white-space: nowrap;
 }
-.cardpeek img { display: block; width: 100%; border-radius: 2px; }
-.cardpeek-row { display: flex; gap: 14px; padding: 8px 4px 3px; }
-.cardpeek-row .act { font-size: 11px; }
-.cardpeek-row .dim { color: var(--faint); }
+.guide-tag:hover { color: var(--text); border-color: var(--magenta); }
+
+/* expanded sheet on a narrow screen: the lesson folds to a label so the
+   light, the fan, and the vessel keep the sea */
+.guide-tip.compact {
+  position: fixed; left: 50%; top: 56px; transform: translateX(-50%);
+  display: flex; align-items: baseline; gap: 10px;
+  max-width: none; padding: 5px 11px; font-size: 11px;
+}
+.guide-tip.compact .k { margin-bottom: 0; }
 
 .sheet .verdict {
   font-family: var(--font-mono); font-size: 11.5px; color: var(--dim);
@@ -379,14 +391,14 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
   transition: opacity 200ms;
 }
 .guide-tip .k { font-family: var(--font-mono); font-size: 10.5px; color: var(--magenta); letter-spacing: 0.14em; display: block; margin-bottom: 4px; }
-.guide-tip .row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.guide-tip .row { display: flex; align-items: center; gap: 6px 12px; margin-top: 8px; flex-wrap: wrap; }
 .guide-tip .dismiss, .guide-tip .goto {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em;
   text-decoration: underline; text-underline-offset: 3px;
   transition: color 140ms, transform 140ms var(--ease-out);
   white-space: nowrap; /* the primary action reads as one line */
 }
-.guide-tip .dismiss { color: var(--faint); text-decoration: none; }
+.guide-tip .dismiss { color: var(--dim); text-decoration: none; }
 .guide-tip .goto { color: var(--lit); }
 .guide-tip .dismiss:hover, .guide-tip .goto:hover { color: var(--text); }
 .guide-tip .dismiss:active, .guide-tip .goto:active { transform: scale(0.94); }
@@ -466,14 +478,14 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 }
 @keyframes iso { 0%, 100% { opacity: 1; transform: scale(1);} 50% { opacity: 0.12; transform: scale(0.8);} }
 .loading .word { font-family: var(--font-mono); font-size: 11px; color: var(--text); letter-spacing: 0.28em; }
-.loading .sub { font-family: var(--font-mono); font-size: 10.5px; color: var(--dim); letter-spacing: 0.08em; }
+.loading .sub { font-family: var(--font-mono); font-size: 10.5px; color: var(--dim); letter-spacing: 0.08em; max-width: 78vw; text-align: center; }
 .loading .act { margin-top: 10px; }
 
 @media (prefers-reduced-motion: reduce) {
   .brand .pip, .dock .live-dot, .loading .pulse { animation: none; }
   .guide-ring { animation: none; opacity: 0.7; }
   .vessel.crossed .halo { animation: none; }
-  .sheet, .tray, .prefs-pop, .cardpeek, .val { animation: none; }
+  .sheet, .tray, .prefs-pop, .val { animation: none; }
   .sheet, .tray, .guide-tip { transition-duration: 80ms; }
   .sheet.settling { transition: none; }
   .vessel .ship { transition: none; }

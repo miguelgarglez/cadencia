@@ -4,7 +4,7 @@ import { store, type StorePoint } from "./lib/data.ts";
 import { LightField } from "./lib/lightField.ts";
 import { setSoundEnabled, isSoundOn, pulse, tick } from "./lib/sound.ts";
 import { bearingDeg, destPoint, haversineKm } from "./lib/geo.ts";
-import { colorHex, notation, type FlashColor, type Light } from "./iala.ts";
+import { colorHex, type FlashColor, type Light } from "./iala.ts";
 import { WebHaptics } from "web-haptics";
 import LightCard from "./components/LightCard.tsx";
 import Hud from "./components/Hud.tsx";
@@ -120,6 +120,16 @@ export default function App() {
   const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
   const [sheetH, setSheetH] = useState(0);
   const [crossed, setCrossed] = useState(false);
+  // reduced motion follows the live preference, not the value at mount —
+  // the field, the strip, and the camera all read the same subscription
+  const [reducedMotion, setReducedMotion] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  useEffect(() => {
+    const mql = matchMedia("(prefers-reduced-motion: reduce)");
+    const on = () => setReducedMotion(mql.matches);
+    mql.addEventListener("change", on);
+    return () => mql.removeEventListener("change", on);
+  }, []);
+  useEffect(() => { fieldRef.current?.setCalm(reducedMotion); }, [reducedMotion]);
   const [guideAnchor, setGuideAnchor] = useState<GuideAnchor | null>(null);
   const [guideTargetName, setGuideTargetName] = useState<string | null>(null);
 
@@ -411,17 +421,15 @@ export default function App() {
         ctx.setLineDash(isActive ? [] : [3, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
-        // the boundary rays are the teachable thing — the active sector's
-        // edges get a solid ray each so the crossing line reads on the chart
-        if (isActive) {
-          ctx.strokeStyle = col + "e6";
-          ctx.lineWidth = 1.6;
-          for (const a of [a0, a1]) {
-            ctx.beginPath();
-            ctx.moveTo(c.x, c.y);
-            ctx.lineTo(c.x + Math.cos(a) * rPx, c.y + Math.sin(a) * rPx);
-            ctx.stroke();
-          }
+        // every boundary is a charted edge the observer can cross — subdued
+        // rays on all of them, strong rays on the sector the vessel is in
+        ctx.strokeStyle = col + (isActive ? "e6" : "4d");
+        ctx.lineWidth = isActive ? 1.6 : 1;
+        for (const a of [a0, a1]) {
+          ctx.beginPath();
+          ctx.moveTo(c.x, c.y);
+          ctx.lineTo(c.x + Math.cos(a) * rPx, c.y + Math.sin(a) * rPx);
+          ctx.stroke();
         }
       }
     }
@@ -440,18 +448,25 @@ export default function App() {
     positionVessel(map);
   }, [positionVessel]);
 
-  const applyVesselBearing = useCallback((p: StorePoint, lat: number, lon: number) => {
-    const b = bearingDeg(p.lat, p.lon, lat, lon);
+  // which charted signal an observer on this bearing would see — shared by
+  // the vessel, the optimistic selection read, and the rose
+  const sectorAt = useCallback((p: StorePoint, deg: number) => {
     let color: FlashColor | null = null;
     let seen: Light | null = null;
     for (const l of p.lights) {
       for (const s of l.sectors) {
-        const inArc = s.start <= s.end ? b >= s.start && b <= s.end : b >= s.start || b <= s.end;
+        const inArc = s.start <= s.end ? deg >= s.start && deg <= s.end : deg >= s.start || deg <= s.end;
         if (inArc) { color = l.colors[s.color] ?? l.colors[0] ?? "W"; seen = l; }
       }
     }
+    return { color, seen };
+  }, []);
+
+  const applyVesselBearing = useCallback((p: StorePoint, lat: number, lon: number, quiet = false) => {
+    const b = bearingDeg(p.lat, p.lon, lat, lon);
+    const { color, seen } = sectorAt(p, b);
     setVesselInfo((prev) => {
-      if (prev && prev.color !== color && color != null) {
+      if (!quiet && prev && prev.color !== color && color != null) {
         haptic("success");
         setCrossed(true);
         if (isSoundOn()) tick();
@@ -463,7 +478,7 @@ export default function App() {
           el.classList.add("crossed");
           setTimeout(() => el.classList.remove("crossed"), 1400);
         }
-      } else if (prev && prev.color !== color) {
+      } else if (!quiet && prev && prev.color !== color) {
         haptic("nudge");
       }
       return { b, color, seen };
@@ -485,7 +500,7 @@ export default function App() {
       if (ship) ship.style.setProperty("--rot", `${(b + 180) % 360}deg`);
     }
     updateOverlay();
-  }, [haptic, updateOverlay]);
+  }, [haptic, sectorAt, updateOverlay]);
 
   const deselect = useCallback(() => {
     const map = mapRef.current;
@@ -523,6 +538,19 @@ export default function App() {
     fieldRef.current?.setSelectedColor(null);
     fieldRef.current?.setActiveLight(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
+    // a sectored light is going to spawn the observer — read the signal it
+    // will land on right away, so the sheet never shows the primary rhythm
+    // first and corrects itself a second later
+    if (hasSectors) {
+      const ws = widestSector(p);
+      const w = ws ? (ws.end - ws.start <= 0 ? ws.end - ws.start + 360 : ws.end - ws.start) : 0;
+      const intended = ws ? (ws.end - Math.min(5, w * 0.22) + 360) % 360 : 0;
+      const { color, seen } = sectorAt(p, intended);
+      setVesselInfo({ b: intended, color, seen });
+      activeSeenRef.current = seen;
+      fieldRef.current?.setActiveLight(seen);
+      fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : [0.16, 0.2, 0.27]);
+    }
     const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
     const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     history.replaceState(null, "", `#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${Math.max(map.getZoom(), cam.zoom).toFixed(1)}/${p.id}`);
@@ -569,6 +597,7 @@ export default function App() {
   const steerVesselTo = useCallback((map: MLMap, p: StorePoint, deg: number) => {
     const v = vesselRef.current;
     if (!v) return;
+    v.glide++; // deliberate steering cancels any refit glide
     const dKm = Math.max(haversineKm(p.lat, p.lon, v.lat, v.lon), 0.15);
     const [lat, lon] = destPoint(p.lat, p.lon, deg, dKm);
     v.lat = lat; v.lon = lon;
@@ -604,7 +633,7 @@ export default function App() {
     const ll = map.unproject([pos.x, pos.y]);
     vesselRef.current = { el, lat: ll.lat, lon: ll.lng, glide: 0 };
     positionVessel(map);
-    applyVesselBearing(p, ll.lat, ll.lng);
+    applyVesselBearing(p, ll.lat, ll.lng, true);
 
     let pid = -1;
     // grab offset: the vessel keeps its position relative to the finger —
@@ -615,6 +644,7 @@ export default function App() {
       pid = e.pointerId;
       el.setPointerCapture(pid);
       vesselDrag.current = true;
+      if (vesselRef.current) vesselRef.current.glide++; // a grab cancels any refit glide
       const vp = el.getBoundingClientRect();
       grabDX = e.clientX - (vp.left + vp.width / 2);
       grabDY = e.clientY - (vp.top + vp.height / 2);
@@ -666,23 +696,30 @@ export default function App() {
     if (inside) return;
     const spot = vesselSpot(map, p);
     const ll = map.unproject([spot.x, spot.y]);
+    const dKm = Math.max(haversineKm(p.lat, p.lon, v.lat, v.lon), 0.15);
+    const bFrom = bearingDeg(p.lat, p.lon, v.lat, v.lon);
+    const bTo = bearingDeg(p.lat, p.lon, ll.lat, ll.lng);
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
       v.lat = ll.lat; v.lon = ll.lng;
       positionVessel(map);
-      applyVesselBearing(p, ll.lat, ll.lng);
+      applyVesselBearing(p, ll.lat, ll.lng, true);
       return;
     }
-    // a forced move still reads as motion, not a teleport
-    const from = { lat: v.lat, lon: v.lon }, token = ++v.glide;
+    // a forced move still reads as motion: orbit the light at constant
+    // distance, shortest arc, signal live the whole way — never a teleport
+    let sweep = bTo - bFrom;
+    if (sweep > 180) sweep -= 360;
+    if (sweep < -180) sweep += 360;
+    const token = ++v.glide;
     const t0 = performance.now(), dur = 380;
     const step = (now: number) => {
       if (!vesselRef.current || vesselRef.current.glide !== token || vesselDrag.current) return;
       const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
-      v.lat = from.lat + (ll.lat - from.lat) * e;
-      v.lon = from.lon + (ll.lng - from.lon) * e;
+      const [glat, glon] = destPoint(p.lat, p.lon, bFrom + sweep * e, dKm);
+      v.lat = glat; v.lon = glon;
       positionVessel(map);
+      applyVesselBearing(p, glat, glon, true);
       if (k < 1) requestAnimationFrame(step);
-      else applyVesselBearing(p, v.lat, v.lon);
     };
     requestAnimationFrame(step);
   }, [freeRect, blockedRects, vesselSpot, positionVessel, applyVesselBearing]);
@@ -855,13 +892,21 @@ export default function App() {
     }
   }, [haptic]);
 
+  const cardUrlRef = useRef<string | null>(null);
   const saveCard = useCallback(async (): Promise<{ ok: boolean; url?: string; filename?: string }> => {
     const p = selectedRef.current;
     if (!p) return { ok: false };
     try {
       const m = await import("./lib/share.ts");
-      const r = await m.shareCard(p, vesselInfoRef.current?.seen ?? p.light, vesselInfoRef.current?.b ?? null);
-      if (r.ok) haptic("success");
+      // vi.seen may be null — outside the sectors the card records the true
+      // "no signal at this bearing" instead of the primary light
+      const vi = vesselInfoRef.current;
+      const r = await m.shareCard(p, vi ? vi.seen : undefined, vi?.b ?? null);
+      if (r.ok) {
+        if (cardUrlRef.current) URL.revokeObjectURL(cardUrlRef.current);
+        cardUrlRef.current = r.url ?? null;
+        haptic("success");
+      }
       return r;
     } catch {
       return { ok: false };
@@ -876,8 +921,7 @@ export default function App() {
     // describe the whole signal, not just the lit color at this instant
     const litColors = [...new Set(seen.segs.filter((s) => s.level > 0).map((s) => seen.colors[s.color] ?? "W"))];
     const shows = litColors.length > 1 ? `${litColors.map(word).join("/")}, alternating` : word(color);
-    const which = seen !== selected.light ? ` (${notation(seen)})` : "";
-    return `bearing ${Math.round(b)}° — from here the light shows ${shows}${which}`;
+    return `bearing ${Math.round(b)}° — from here the light shows ${shows}`;
   }, [vesselInfo, selected]);
 
   const activeLight = vesselInfo?.seen ?? selected?.light;
@@ -926,6 +970,7 @@ export default function App() {
           onClose={deselect}
           onCopyLink={copyLink}
           onSaveCard={saveCard}
+          reduced={reducedMotion}
           onHeightChange={(h) => {
             sheetRef.current = h;
             setSheetH(h);
@@ -950,8 +995,9 @@ export default function App() {
         <Guide
           anchor={guideAnchor}
           selected={selected}
-          vesselActive={!!vesselRef.current}
+          vesselActive={!!vesselInfo}
           crossed={crossed}
+          compact={sheetH > 300}
           targetName={guideTargetName}
           clearanceBottom={sheetH + DOCK_H + 10}
           onFlyToTarget={flyToGuideTarget}

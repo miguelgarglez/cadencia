@@ -18,6 +18,7 @@ export default function LightCard({
   onHeightChange,
   onSettle,
   onHaptic,
+  reduced,
 }: {
   point: StorePoint;
   vesselNote: string | null;
@@ -31,14 +32,14 @@ export default function LightCard({
   onHeightChange?: (h: number) => void;
   onSettle?: () => void;
   onHaptic?: (kind: "nudge" | "success" | "buzz") => void;
+  reduced?: boolean;
 }) {
   const l = activeLight;
   const stripRef = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(400);
   const [peek, setPeek] = useState(() => window.innerWidth <= 640);
   const [linkState, setLinkState] = useState<"idle" | "busy" | "done" | "fail">("idle");
-  const [cardState, setCardState] = useState<"idle" | "busy" | "fail">("idle");
-  const [cardPeek, setCardPeek] = useState<{ url: string; filename: string; y: number } | null>(null);
+  const [cardState, setCardState] = useState<"idle" | "busy" | "done" | "fail">("idle");
 
   useEffect(() => {
     const el = stripRef.current;
@@ -50,7 +51,6 @@ export default function LightCard({
 
   // playhead sweeps live — same time-of-day clock the sea uses
   const [t, setT] = useState(0);
-  const reduced = useRef(matchMedia("(prefers-reduced-motion: reduce)").matches).current;
   useEffect(() => {
     if (reduced || l.period <= 0) { setT(0); return; }
     let raf = 0;
@@ -77,7 +77,7 @@ export default function LightCard({
   // the grip is the sheet's handle: the sheet tracks the finger continuously,
   // then settles to the nearest detent on distance AND release velocity —
   // the tail of the gesture animates, it doesn't snap
-  const gripDrag = useRef<{ pid: number; y0: number; moved: boolean; trail: { y: number; t: number }[] } | null>(null);
+  const gripDrag = useRef<{ pid: number; y0: number; moved: boolean; overDetent: boolean; trail: { y: number; t: number }[] } | null>(null);
   const settle = useCallback((el: HTMLElement, travel: number, v: number, nextPeek: boolean) => {
     el.classList.remove("dragging");
     el.classList.add("settling");
@@ -122,7 +122,7 @@ export default function LightCard({
   }, [peek, settle, onHaptic, onSettle]);
   const onGripDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
     if (gripDrag.current) return; // one pointer owns the sheet
-    gripDrag.current = { pid: e.pointerId, y0: e.clientY, moved: false, trail: [{ y: e.clientY, t: e.timeStamp }] };
+    gripDrag.current = { pid: e.pointerId, y0: e.clientY, moved: false, overDetent: false, trail: [{ y: e.clientY, t: e.timeStamp }] };
     e.currentTarget.setPointerCapture(e.pointerId);
     cardRef.current?.classList.add("dragging"); // follow the finger, no easing
   }, []);
@@ -137,9 +137,13 @@ export default function LightCard({
     // follow the finger: peek can only stretch up, expanded only down
     const travel = peek ? Math.min(dy, 0) : Math.max(dy, 0);
     el.style.transform = `translateY(${travel}px)`;
+    // a nudge the moment the drag crosses the settle threshold — the detent
+    // is felt mid-gesture, not discovered on release
+    const over = Math.abs(travel) > 60;
+    if (over !== g.overDetent) { g.overDetent = over; onHaptic?.("nudge"); }
     g.trail.push({ y: e.clientY, t: e.timeStamp });
     if (g.trail.length > 8) g.trail.shift();
-  }, [peek]);
+  }, [peek, onHaptic]);
 
   const flash = (set: typeof setLinkState) => (ok: Promise<boolean>) => {
     set("busy");
@@ -257,47 +261,25 @@ export default function LightCard({
               onClick={() => {
                 setCardState("busy");
                 onSaveCard().then(({ ok, url, filename }) => {
-                  setCardState(ok ? "idle" : "fail");
                   if (ok && url && filename) {
-                    // preview first — the download only happens on the card's
-                    // own save action, and the preview sits outside the sheet's
-                    // scroll box so nothing clips it
-                    const r = cardRef.current?.getBoundingClientRect();
-                    setCardPeek({ url, filename, y: window.innerHeight - (r?.top ?? window.innerHeight) + 10 });
-                    onHaptic?.("nudge");
-                  }
-                  if (!ok) setTimeout(() => setCardState("idle"), 2400);
+                    // the card the button names is the card that downloads —
+                    // one tap, no staging step
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = filename;
+                    a.click();
+                    setCardState("done");
+                  } else setCardState("fail");
+                  setTimeout(() => setCardState("idle"), 2400);
                 });
               }}
             >
-              {cardState === "fail" ? "card failed" : cardState === "busy" ? "drawing…" : "record this bearing"}
+              {cardState === "done" ? "saved ✓" : cardState === "fail" ? "card failed" : cardState === "busy" ? "drawing…" : "record this bearing"}
             </button>
           </div>
         </div>
       </div>
       {sectored && <Rose point={point} bearing={vesselBearing} onSteer={onSteer} />}
-      {cardPeek && (
-        <div className="cardpeek" style={{ bottom: cardPeek.y }} role="dialog" aria-label="share card preview">
-          <img src={cardPeek.url} alt="the exported chart card" />
-          <div className="cardpeek-row">
-            <button
-              className="act"
-              onClick={() => {
-                const a = document.createElement("a");
-                a.href = cardPeek.url;
-                a.download = cardPeek.filename;
-                a.click();
-                onHaptic?.("success");
-              }}
-            >
-              save png ↓
-            </button>
-            <button className="act dim" onClick={() => { URL.revokeObjectURL(cardPeek.url); setCardPeek(null); }}>
-              dismiss
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -337,6 +319,7 @@ function Rose({
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ pid: number; off: number } | null>(null);
+  const [grabbed, setGrabbed] = useState(false);
   const R = 38, C = 50;
 
   const angleOf = useCallback((e: React.PointerEvent) => {
@@ -362,7 +345,7 @@ function Rose({
   const needle = bearing == null ? null : ((bearing - 90) * Math.PI) / 180;
 
   return (
-    <div className="rose">
+    <div className={`rose${grabbed ? " grabbed" : ""}`}>
       <svg
         ref={svgRef}
         viewBox="0 0 100 100"
@@ -390,6 +373,7 @@ function Rose({
           // grab offset: the needle keeps its angle under the finger
           const off = bearing == null ? 0 : angleOf(e) - bearing;
           drag.current = { pid: e.pointerId, off };
+          setGrabbed(true); // touch gets a visible acknowledgement, not just a cursor
           if (bearing == null) onSteer(angleOf(e));
         }}
         onPointerMove={(e) => {
@@ -397,9 +381,9 @@ function Rose({
           if (!d || e.pointerId !== d.pid) return;
           onSteer(((angleOf(e) - d.off) % 360 + 360) % 360);
         }}
-        onPointerUp={(e) => { if (drag.current?.pid === e.pointerId) drag.current = null; }}
-        onPointerCancel={(e) => { if (drag.current?.pid === e.pointerId) drag.current = null; }}
-        onLostPointerCapture={(e) => { if (drag.current?.pid === e.pointerId) drag.current = null; }}
+        onPointerUp={(e) => { if (drag.current?.pid === e.pointerId) { drag.current = null; setGrabbed(false); } }}
+        onPointerCancel={(e) => { if (drag.current?.pid === e.pointerId) { drag.current = null; setGrabbed(false); } }}
+        onLostPointerCapture={(e) => { if (drag.current?.pid === e.pointerId) { drag.current = null; setGrabbed(false); } }}
       >
         <circle cx={C} cy={C} r={R + 6} fill="none" stroke="#16283a" strokeWidth={1} />
         {[0, 90, 180, 270].map((d) => {

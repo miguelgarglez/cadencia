@@ -131,8 +131,11 @@ void main() {
   float r = length(v_uv);
   if (r > 1.0) discard;
   float core = pow(max(0.0, 1.0 - r), 4.0) * 1.15;
-  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38 * mix(0.25, 1.0, v_damp);
-  float a = (core + halo) * v_level * mix(0.62, 1.0, v_damp);
+  // overlap is a halo problem, not a core problem — at wide zooms the halo
+  // nearly vanishes so dense coasts don't merge into threads, while the
+  // sharp core keeps even a lone light legible
+  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38 * v_damp * v_damp;
+  float a = (core + halo) * v_level * mix(0.78, 1.0, v_damp);
   if (v_kind == 1.0) a = pow(max(0.0, 1.0 - r), 2.0) * 0.30;
   else a = max(a, pow(max(0.0, 1.0 - r), 3.0) * 0.075); // charted symbol ember
   outColor = vec4(v_color * a, a);

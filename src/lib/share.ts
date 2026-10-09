@@ -4,8 +4,10 @@ import type { Light } from "../iala.ts";
 import { colorHex, notation } from "../iala.ts";
 
 // `active` is the sub-light the vessel actually sees — the card records the
-// signal from that bearing, not just the primary light. Returns the blob URL
-// and filename so the caller can preview the exact card before saving it.
+// signal from that bearing, not just the primary light. When the observer is
+// outside every sector (active === null with a bearing), the card says so
+// instead of quietly recording the primary signal. Returns the blob URL and
+// filename; the caller owns the URL's lifetime.
 export function shareCard(p: StorePoint, active?: Light | null, bearing?: number | null): Promise<{ ok: boolean; url?: string; filename?: string }> {
   const l = active ?? p.light;
   const W = 1200, H = 630;
@@ -24,8 +26,9 @@ export function shareCard(p: StorePoint, active?: Light | null, bearing?: number
   c.strokeStyle = "rgba(34,64,90,0.9)";
   c.strokeRect(24.5, 24.5, W - 49, H - 49);
 
-  // sector rose at right, if the light wears sectors
-  const sectored = l.sectors.length > 0;
+  // sector rose at right, if the station wears sectors — every sub-light's
+  // arcs, not just the one currently showing
+  const sectored = p.lights.some((x) => x.sectors.length > 0);
   const rcx = W - 240, rcy = 300, rr = 130;
   if (sectored) {
     c.save();
@@ -41,31 +44,33 @@ export function shareCard(p: StorePoint, active?: Light | null, bearing?: number
       c.lineTo(Math.cos(a) * (rr + (long ? 26 : 18)), Math.sin(a) * (rr + (long ? 26 : 18)));
       c.stroke();
     }
-    for (const s of l.sectors) {
-      const col = colorHex(l.colors[s.color] ?? l.colors[0] ?? "W");
-      const a0 = ((s.start - 90) * Math.PI) / 180;
-      const a1 = ((s.end - 90) * Math.PI) / 180;
-      const isActive = bearing != null &&
-        (s.start <= s.end ? bearing >= s.start && bearing <= s.end : bearing >= s.start || bearing <= s.end);
-      c.beginPath();
-      c.moveTo(0, 0);
-      c.arc(0, 0, rr, a0, a1);
-      c.closePath();
-      // the sector the observer stood in carries the crossing into the export
-      c.fillStyle = col + (isActive ? "33" : "14");
-      c.fill();
-      c.beginPath();
-      c.arc(0, 0, rr, a0, a1);
-      c.strokeStyle = col;
-      c.lineWidth = isActive ? 4 : 3;
-      c.stroke();
-      if (isActive) {
-        c.lineWidth = 1.6;
+    for (const sl of p.lights) {
+      for (const s of sl.sectors) {
+        const col = colorHex(sl.colors[s.color] ?? sl.colors[0] ?? "W");
+        const a0 = ((s.start - 90) * Math.PI) / 180;
+        const a1 = ((s.end - 90) * Math.PI) / 180;
+        const isActive = active === sl && bearing != null &&
+          (s.start <= s.end ? bearing >= s.start && bearing <= s.end : bearing >= s.start || bearing <= s.end);
+        c.beginPath();
+        c.moveTo(0, 0);
+        c.arc(0, 0, rr, a0, a1);
+        c.closePath();
+        // the sector the observer stood in carries the crossing into the export
+        c.fillStyle = col + (isActive ? "33" : "14");
+        c.fill();
+        c.beginPath();
+        c.arc(0, 0, rr, a0, a1);
+        c.strokeStyle = col;
+        c.lineWidth = isActive ? 4 : 3;
+        c.stroke();
+        c.lineWidth = 1.4;
         for (const a of [a0, a1]) {
           c.beginPath();
           c.moveTo(0, 0);
           c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+          c.globalAlpha = isActive ? 1 : 0.45;
           c.stroke();
+          c.globalAlpha = 1;
         }
       }
     }
@@ -164,6 +169,7 @@ export function shareCard(p: StorePoint, active?: Light | null, bearing?: number
     `${Math.abs(p.lat).toFixed(3)}° ${p.lat >= 0 ? "N" : "S"}  ·  ${Math.abs(p.lon).toFixed(3)}° ${p.lon >= 0 ? "E" : "W"}` +
     (p.ref ? `   ${p.ref}` : "") +
     (bearing != null ? `   ·   seen from ${Math.round(bearing)}°` : "") +
+    (bearing != null && !active ? "   ·   no signal at this bearing" : "") +
     (l.inferred ? "   ·   approx" : ""),
     80, 350,
   );
@@ -175,10 +181,10 @@ export function shareCard(p: StorePoint, active?: Light | null, bearing?: number
   return new Promise((resolve) => {
     cv.toBlob((blob) => {
       if (!blob) { resolve({ ok: false }); return; }
-      // no download here — the caller previews the card, then saves it itself
+      // no download and no expiry here — the caller saves the card and owns
+      // the URL's lifetime
       const url = URL.createObjectURL(blob);
       const filename = `cadencia-${(p.name ?? "light").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
       resolve({ ok: true, url, filename });
     }, "image/png");
   });

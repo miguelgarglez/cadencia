@@ -15,6 +15,7 @@ export default function Guide({
   vesselActive,
   crossed,
   targetName,
+  compact = false,
   clearanceBottom = 0,
   onFlyToTarget,
   onTargetClick,
@@ -24,6 +25,7 @@ export default function Guide({
   selected: StorePoint | null;
   vesselActive: boolean;
   crossed: boolean;
+  compact?: boolean;
   targetName: string | null;
   clearanceBottom?: number;
   onFlyToTarget: () => void;
@@ -114,13 +116,32 @@ export default function Guide({
   return (
     <>
       {anchor && !anchor.offscreen && step <= 1 && (
-        <button
-          className="guide-ring"
-          style={{ left: anchor.x, top: anchor.y }}
-          onClick={onTargetClick}
-          aria-label={targetName ? `select ${targetName}` : "select the marked light"}
-        />
+        <>
+          <button
+            className="guide-ring"
+            style={{ left: anchor.x, top: anchor.y }}
+            onClick={onTargetClick}
+            aria-label={targetName ? `select ${targetName}` : "select the marked light"}
+          />
+          {targetName && (
+            <button
+              className="guide-tag"
+              style={{ left: anchor.x - 32, top: anchor.y }}
+              onClick={onTargetClick}
+            >
+              {targetName} →
+            </button>
+          )}
+        </>
       )}
+      {/* once the sheet takes the bottom of a narrow screen, the lesson
+          collapses to a label so the light, fan, and vessel stay visible */}
+      {compact ? (
+        <div className="guide-tip compact" role="status">
+          <span className="k">{tip.k}</span>
+          <button className="dismiss" onClick={onDone}>done</button>
+        </div>
+      ) : (
       <div className="guide-tip" style={pos} role="status">
         <span className="k">{tip.k}</span>
         {tip.body}
@@ -138,6 +159,7 @@ export default function Guide({
           <button className="dismiss" onClick={onDone}>skip the guide</button>
         </div>
       </div>
+      )}
     </>
   );
 }
