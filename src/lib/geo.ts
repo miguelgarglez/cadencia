@@ -55,6 +55,13 @@ export function bearingDeg(lat1: number, lon1: number, lat2: number, lon2: numbe
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371, φ1 = (lat1 * Math.PI) / 180, φ2 = (lat2 * Math.PI) / 180;
+  const dφ = φ2 - φ1, dλ = ((lon2 - lon1) * Math.PI) / 180;
+  const a = Math.sin(dφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(dλ / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
 export function destPoint(lat: number, lon: number, bearingDeg: number, distKm: number): [number, number] {
   const R = 6371, d = distKm / R, θ = (bearingDeg * Math.PI) / 180;
   const φ1 = (lat * Math.PI) / 180, λ1 = (lon * Math.PI) / 180;

@@ -85,7 +85,7 @@ const clickAt = async (page, lon, lat) => page.evaluate(([lon, lat]) => {
   await page.evaluate(([lon, lat]) => window.__map.jumpTo({ center: [lon, lat], zoom: 10.5 }), [t.lon, t.lat]);
   await page.waitForTimeout(500);
   await clickAt(page, t.lon, t.lat);
-  await page.waitForTimeout(1600); // camera settle + vessel spawn
+  await page.waitForTimeout(2600); // camera ease + settle poll + vessel spawn
   const s1 = await page.evaluate(() => ({
     vessel: !!document.querySelector(".vessel"),
     notation: document.querySelector(".sheet .notation")?.textContent ?? null,

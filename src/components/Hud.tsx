@@ -49,7 +49,12 @@ export default function Hud({
       if (!(e.target as HTMLElement).closest(".prefs-wrap")) setPrefsOpen(false);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); setPrefsOpen(false); }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setPrefsOpen(false);
+        // keyboard dismissal returns focus to the trigger that opened it
+        document.querySelector<HTMLElement>(".prefs-wrap > button")?.focus();
+      }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         const items = [...(pop?.querySelectorAll<HTMLElement>("button") ?? [])];
         const i = items.indexOf(document.activeElement as HTMLElement);

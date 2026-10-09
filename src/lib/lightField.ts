@@ -103,9 +103,10 @@ void main() {
 
   v_level = level * dayFactor;
   v_color = col;
-  // dense coasts would otherwise merge into white threads — halos back off
-  // at low zoom while cores keep their individual rhythms legible
-  v_damp = smoothstep(2.5, 6.5, u_zoom);
+  // dense coasts would otherwise merge into white threads — at the wide
+  // opening zooms the field must stay additive but restrained; full
+  // intensity only arrives once individual lights are separable
+  v_damp = smoothstep(3.5, 10.0, u_zoom);
 
   vec4 clip = u_matrix * vec4(a_merc, 0.0, 1.0);
   float major = mod(floor(meta / 65536.0), 2.0);
@@ -130,8 +131,8 @@ void main() {
   float r = length(v_uv);
   if (r > 1.0) discard;
   float core = pow(max(0.0, 1.0 - r), 4.0) * 1.15;
-  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38 * mix(0.3, 1.0, v_damp);
-  float a = (core + halo) * v_level;
+  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38 * mix(0.25, 1.0, v_damp);
+  float a = (core + halo) * v_level * mix(0.62, 1.0, v_damp);
   if (v_kind == 1.0) a = pow(max(0.0, 1.0 - r), 2.0) * 0.30;
   else a = max(a, pow(max(0.0, 1.0 - r), 3.0) * 0.075); // charted symbol ember
   outColor = vec4(v_color * a, a);

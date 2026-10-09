@@ -3,7 +3,7 @@ import maplibregl, { Map as MLMap } from "maplibre-gl";
 import { store, type StorePoint } from "./lib/data.ts";
 import { LightField } from "./lib/lightField.ts";
 import { setSoundEnabled, isSoundOn, pulse, tick } from "./lib/sound.ts";
-import { bearingDeg } from "./lib/geo.ts";
+import { bearingDeg, destPoint, haversineKm } from "./lib/geo.ts";
 import { colorHex, notation, type FlashColor, type Light } from "./iala.ts";
 import { WebHaptics } from "web-haptics";
 import LightCard from "./components/LightCard.tsx";
@@ -93,7 +93,7 @@ export default function App() {
   const mapRef = useRef<MLMap | null>(null);
   const fieldRef = useRef<LightField | null>(null);
   const hapticsRef = useRef(new WebHaptics());
-  const vesselRef = useRef<{ el: HTMLDivElement; lat: number; lon: number } | null>(null);
+  const vesselRef = useRef<{ el: HTMLDivElement; lat: number; lon: number; glide: number } | null>(null);
   const vesselDrag = useRef(false);
   const sheetRef = useRef(240); // measured height, for camera padding + spawn bounds
   const pendingIdRef = useRef<string | null>(null);
@@ -300,12 +300,22 @@ export default function App() {
       !blocks.some((r) => x > r.left - 24 && x < r.right + 24 && y > r.top - 24 && y < r.bottom + 24);
     const R = window.innerWidth <= 640 ? 105 : 135;
     const widest = widestSectorMid(p);
+    // the first drag should teach a crossing — start just inside the widest
+    // sector's edge so a boundary sits beside the vessel, not across the rose
+    const ws = widestSector(p);
+    let heads: number[] = [widest];
+    if (ws) {
+      let w = ws.end - ws.start;
+      if (w <= 0) w += 360;
+      const e = Math.min(5, w * 0.22);
+      heads = [(ws.end - e + 360) % 360, (ws.start + e) % 360, widest];
+    }
     // prefer bearings inside a charted sector — the vessel starts inside the
     // lesson, next to a boundary worth crossing
     const inSector = (deg: number) =>
       p.lights.some((l) => l.sectors.some((s) =>
         s.start <= s.end ? deg >= s.start && deg <= s.end : deg >= s.start || deg <= s.end));
-    const candidates = [widest, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
+    const candidates = [...heads, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
     for (const onlySectors of [true, false]) {
       for (const RR of [R, R * 1.5, R * 2.2]) {
         for (const deg of candidates) {
@@ -401,6 +411,18 @@ export default function App() {
         ctx.setLineDash(isActive ? [] : [3, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
+        // the boundary rays are the teachable thing — the active sector's
+        // edges get a solid ray each so the crossing line reads on the chart
+        if (isActive) {
+          ctx.strokeStyle = col + "e6";
+          ctx.lineWidth = 1.6;
+          for (const a of [a0, a1]) {
+            ctx.beginPath();
+            ctx.moveTo(c.x, c.y);
+            ctx.lineTo(c.x + Math.cos(a) * rPx, c.y + Math.sin(a) * rPx);
+            ctx.stroke();
+          }
+        }
       }
     }
     // bearing leader: vessel to light
@@ -501,59 +523,57 @@ export default function App() {
     fieldRef.current?.setSelectedColor(null);
     fieldRef.current?.setActiveLight(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
-    // while the guide is up on a narrow screen, keep headroom above the
-    // light — its northern sector band and vessel need the space
-    const pad = {
-      top: guideOnRef.current && window.innerWidth <= 640 ? 200 : 0,
-      left: 0, right: 0,
-      bottom: sheetRef.current + DOCK_H + 16,
-    };
     const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
     const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) {
-      map.jumpTo({ ...cam, padding: pad });
-    } else {
-      map.easeTo({ ...cam, padding: pad, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
-    }
     history.replaceState(null, "", `#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${Math.max(map.getZoom(), cam.zoom).toFixed(1)}/${p.id}`);
     if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
     if (hasSectors) {
-      // spawn only after the camera truly stops — onHeightChange's setPadding
-      // fires stray moveends mid-ease, and a mid-flight unproject strands the
-      // vessel. Poll isMoving; the floor lets the sheet + guide dock first.
-      const t0 = performance.now();
-      const wait = () => {
+      // two frames: the sheet mounts and its ResizeObserver reports the real
+      // height before the ease targets padding — one clean camera move, no
+      // mid-flight setPadding interrupt, no post-settle snap
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         if (selectedRef.current !== p) return;
-        if (!map.isMoving() && performance.now() - t0 > (reduceMotion ? 60 : 950)) spawnVessel(map, p);
-        else if (performance.now() - t0 < 2200) setTimeout(wait, 90);
-        else spawnVessel(map, p);
+        const pad2 = {
+          top: guideOnRef.current && window.innerWidth <= 640 ? 200 : 0,
+          left: 0, right: 0,
+          bottom: sheetRef.current + DOCK_H + 16,
+        };
+        if (reduceMotion) map.jumpTo({ ...cam, padding: pad2 });
+        else map.easeTo({ ...cam, padding: pad2, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
+        // spawn once the camera truly stops; the floor lets the guide tip dock
+        const t0 = performance.now();
+        const wait = () => {
+          if (selectedRef.current !== p) return;
+          if (!map.isMoving() && performance.now() - t0 > (reduceMotion ? 60 : 950)) spawnVessel(map, p);
+          else if (performance.now() - t0 < 2200) setTimeout(wait, 90);
+          else spawnVessel(map, p);
+        };
+        setTimeout(wait, 90);
+      }));
+    } else {
+      removeVessel();
+      const pad2 = {
+        top: guideOnRef.current && window.innerWidth <= 640 ? 200 : 0,
+        left: 0, right: 0,
+        bottom: sheetRef.current + DOCK_H + 16,
       };
-      setTimeout(wait, 90);
-    } else removeVessel();
+      if (reduceMotion) map.jumpTo({ ...cam, padding: pad2 });
+      else map.easeTo({ ...cam, padding: pad2, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
+    }
     setTimeout(updateOverlay, 950);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [removeVessel, updateOverlay]);
 
-  // bearing light → vessel, measured in screen space so rose dragging agrees
-  const currentScreenBearing = useCallback((map: MLMap, p: StorePoint): number => {
-    const v = vesselRef.current;
-    if (!v) return 0;
-    const c = map.project([p.lon, p.lat]);
-    const s = map.project([v.lon, v.lat]);
-    return ((Math.atan2(s.x - c.x, c.y - s.y) * 180) / Math.PI + 360) % 360;
-  }, []);
-
+  // one bearing convention everywhere: the rose, the keys, the drag, and the
+  // sector lookup all speak true geographic bearing — Mercator never enters it
   const steerVesselTo = useCallback((map: MLMap, p: StorePoint, deg: number) => {
     const v = vesselRef.current;
     if (!v) return;
-    const c = map.project([p.lon, p.lat]);
-    const s = map.project([v.lon, v.lat]);
-    const r = Math.hypot(s.x - c.x, s.y - c.y) || 130;
-    const a = (deg * Math.PI) / 180;
-    const ll = map.unproject([c.x + Math.sin(a) * r, c.y - Math.cos(a) * r]);
-    v.lat = ll.lat; v.lon = ll.lng;
+    const dKm = Math.max(haversineKm(p.lat, p.lon, v.lat, v.lon), 0.15);
+    const [lat, lon] = destPoint(p.lat, p.lon, deg, dKm);
+    v.lat = lat; v.lon = lon;
     positionVessel(map);
-    applyVesselBearing(p, ll.lat, ll.lng);
+    applyVesselBearing(p, lat, lon);
   }, [applyVesselBearing, positionVessel]);
 
   const onSteer = useCallback((deg: number) => {
@@ -582,7 +602,7 @@ export default function App() {
     const c = map.project([p.lon, p.lat]);
     const pos = vesselSpot(map, p, c);
     const ll = map.unproject([pos.x, pos.y]);
-    vesselRef.current = { el, lat: ll.lat, lon: ll.lng };
+    vesselRef.current = { el, lat: ll.lat, lon: ll.lng, glide: 0 };
     positionVessel(map);
     applyVesselBearing(p, ll.lat, ll.lng);
 
@@ -614,7 +634,8 @@ export default function App() {
       else if (e.key === "ArrowLeft" || e.key === "ArrowDown") d = -step;
       else return;
       e.preventDefault();
-      steerVesselTo(map, p, currentScreenBearing(map, p) + d);
+      const v = vesselRef.current;
+      steerVesselTo(map, p, ((bearingDeg(p.lat, p.lon, v.lat, v.lon) + d) % 360 + 360) % 360);
     });
     el.addEventListener("pointermove", (e) => {
       if (!vesselDrag.current || e.pointerId !== pid || !vesselRef.current) return;
@@ -631,13 +652,13 @@ export default function App() {
     };
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
-  }, [applyVesselBearing, vesselSpot, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
+  }, [applyVesselBearing, vesselSpot, haptic, positionVessel, removeVessel, steerVesselTo]);
 
   // after the sheet settles, keep the vessel inside the working area — if it
-  // now sits under the sheet or a tip, move it to a clear bearing on the ring
+  // now sits under the sheet or a tip, glide it to a clear bearing on the ring
   const refitVessel = useCallback(() => {
     const map = mapRef.current, v = vesselRef.current, p = selectedRef.current;
-    if (!map || !v || !p) return;
+    if (!map || !v || !p || vesselDrag.current) return;
     const pt = map.project([v.lon, v.lat]);
     const fr = freeRect(), blocks = blockedRects();
     const inside = pt.x > fr.x0 && pt.x < fr.x1 && pt.y > fr.y0 && pt.y < fr.y1 &&
@@ -645,9 +666,25 @@ export default function App() {
     if (inside) return;
     const spot = vesselSpot(map, p);
     const ll = map.unproject([spot.x, spot.y]);
-    v.lat = ll.lat; v.lon = ll.lng;
-    positionVessel(map);
-    applyVesselBearing(p, ll.lat, ll.lng);
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      v.lat = ll.lat; v.lon = ll.lng;
+      positionVessel(map);
+      applyVesselBearing(p, ll.lat, ll.lng);
+      return;
+    }
+    // a forced move still reads as motion, not a teleport
+    const from = { lat: v.lat, lon: v.lon }, token = ++v.glide;
+    const t0 = performance.now(), dur = 380;
+    const step = (now: number) => {
+      if (!vesselRef.current || vesselRef.current.glide !== token || vesselDrag.current) return;
+      const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      v.lat = from.lat + (ll.lat - from.lat) * e;
+      v.lon = from.lon + (ll.lng - from.lon) * e;
+      positionVessel(map);
+      if (k < 1) requestAnimationFrame(step);
+      else applyVesselBearing(p, v.lat, v.lon);
+    };
+    requestAnimationFrame(step);
   }, [freeRect, blockedRects, vesselSpot, positionVessel, applyVesselBearing]);
 
   useEffect(() => {
@@ -818,7 +855,7 @@ export default function App() {
     }
   }, [haptic]);
 
-  const saveCard = useCallback(async (): Promise<{ ok: boolean; url?: string }> => {
+  const saveCard = useCallback(async (): Promise<{ ok: boolean; url?: string; filename?: string }> => {
     const p = selectedRef.current;
     if (!p) return { ok: false };
     try {
@@ -885,14 +922,19 @@ export default function App() {
           activeLight={activeLight!}
           leaving={leaving}
           onSteer={onSteer}
+          onHaptic={haptic}
           onClose={deselect}
           onCopyLink={copyLink}
           onSaveCard={saveCard}
           onHeightChange={(h) => {
             sheetRef.current = h;
             setSheetH(h);
+            // a setPadding here would jumpTo and kill an in-flight select ease —
+            // the settle poll lands the final padding once the camera stops
+            const map = mapRef.current;
+            if (!map || map.isMoving()) return;
             const top = guideOnRef.current && window.innerWidth <= 640 ? 200 : 0;
-            mapRef.current?.setPadding({ top, left: 0, right: 0, bottom: h + DOCK_H + 16 });
+            map.setPadding({ top, left: 0, right: 0, bottom: h + DOCK_H + 16 });
           }}
           onSettle={() => {
             const map = mapRef.current;
@@ -946,16 +988,24 @@ function updateInView(map: MLMap, set: (n: number) => void) {
   set(n);
 }
 
-function widestSectorMid(p: StorePoint): number {
-  let best = 140, span = -1;
+function widestSector(p: StorePoint): { start: number; end: number } | null {
+  let best: { start: number; end: number } | null = null, span = -1;
   for (const l of p.lights) {
     for (const s of l.sectors) {
       let w = s.end - s.start;
       if (w <= 0) w += 360;
-      if (w > span) { span = w; best = (s.start + w / 2) % 360; }
+      if (w > span) { span = w; best = s; }
     }
   }
   return best;
+}
+
+function widestSectorMid(p: StorePoint): number {
+  const s = widestSector(p);
+  if (!s) return 140;
+  let w = s.end - s.start;
+  if (w <= 0) w += 360;
+  return (s.start + w / 2) % 360;
 }
 
 function hexToRgb(hex: string): [number, number, number] {

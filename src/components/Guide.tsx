@@ -32,23 +32,11 @@ export default function Guide({
 }) {
   const [step, setStep] = useState(0);
 
-  // step 0 hands off only on a deliberate press — a passing scroll shouldn't
-  // skip the lesson. A still reader gets a longer fallback timer.
+  // step 0 hands off only on the action it teaches — picking a light — or a
+  // deliberate dismissal. Incidental presses elsewhere keep the invitation.
   useEffect(() => {
-    if (step !== 0) return;
-    const advance = () => setStep(1);
-    window.addEventListener("pointerdown", advance);
-    const t = setTimeout(advance, 12000);
-    return () => {
-      window.removeEventListener("pointerdown", advance);
-      clearTimeout(t);
-    };
-  }, [step]);
-
-  // advance on the action each step teaches — a selection from step 0 or 1
-  // (including the "read the target" CTA) lands on the read/steer step
-  useEffect(() => {
-    if (step <= 1 && selected) setStep(2);
+    if (step === 0 && selected) setStep(2);
+    else if (step === 1 && selected) setStep(2);
   }, [step, selected]);
 
   useEffect(() => {
@@ -79,7 +67,7 @@ export default function Guide({
     crossed
       ? {
           k: "crossed",
-          body: "The color changed — you sailed across a sector boundary. That is how a light tells a ship it has left the safe water.",
+          body: "The color changed — you crossed a charted sector boundary. At sea, that change is the message.",
         }
       : vesselActive
         ? {
@@ -88,7 +76,7 @@ export default function Guide({
           }
         : {
             k: "read",
-            body: "The strip plays the light's true rhythm in sync with the sea. Click open water to keep exploring.",
+            body: "The strip plays the light's charted rhythm in sync with the sea. Click open water to keep exploring.",
           },
   ];
   const tip = steps[Math.min(step, steps.length - 1)]!;
@@ -125,7 +113,7 @@ export default function Guide({
 
   return (
     <>
-      {anchor && !anchor.offscreen && step === 1 && (
+      {anchor && !anchor.offscreen && step <= 1 && (
         <button
           className="guide-ring"
           style={{ left: anchor.x, top: anchor.y }}
