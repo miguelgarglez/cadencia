@@ -38,7 +38,9 @@ async function fetchTile([s, w, n, e], attempt = 0) {
   const bbox = `${s},${w},${n},${e}`;
   const key = join(CACHE, `${s}_${w}.json`);
   if (!FORCE && existsSync(key)) return JSON.parse(readFileSync(key, "utf8"));
-  const q = `[out:json][timeout:120];(nwr["seamark:light:character"](${bbox});node["man_made"="lighthouse"](${bbox}););out center tags;`;
+  // bare + numbered characteristics cover every light on an element
+  // (sectored towers often carry ONLY seamark:light:1:/2:/... tags)
+  const q = `[out:json][timeout:120];(nwr["seamark:light:character"](${bbox});nwr[~"^seamark:light:[0-9]+:character$"~"."](${bbox});nwr["man_made"="lighthouse"](${bbox}););out center tags;`;
   const res = await fetch(`${OVERPASS}?data=${encodeURIComponent(q)}`, {
     headers: { "User-Agent": "cadencia-build (github.com/miguelgarglez/cadencia)" },
     signal: AbortSignal.timeout(180_000),
@@ -66,6 +68,7 @@ async function fetchTile([s, w, n, e], attempt = 0) {
 
 const seen = new Map();
 let done = 0;
+let failed = 0;
 for (const tile of tiles) {
   const [s, w] = tile;
   try {
@@ -81,11 +84,16 @@ for (const tile of tiles) {
     if (done % 10 === 0 || (data.elements?.length ?? 0) > 400)
       console.log(`[${done}/${tiles.length}] ${s},${w}: ${data.elements?.length ?? 0} els, total ${seen.size}`);
   } catch (err) {
+    failed++;
     console.error(`TILE FAILED ${s},${w}: ${err.message}`);
   }
   await sleep(1200); // polite pacing
 }
 
 const elements = [...seen.values()];
-writeFileSync(OUT, JSON.stringify({ fetchedAt: new Date().toISOString(), count: elements.length, elements }));
-console.log(`DONE: ${elements.length} light elements -> ${OUT}`);
+// never let a partial crawl masquerade as the full dataset: only a clean,
+// complete run earns raw-lights.json — partial runs land in raw-partial.json
+const complete = failed === 0 && !rowsArg;
+const out = complete ? OUT : join(ROOT, "pipeline", "raw-partial.json");
+writeFileSync(out, JSON.stringify({ fetchedAt: new Date().toISOString(), count: elements.length, elements }));
+console.log(`DONE: ${elements.length} light elements, ${failed} failed tiles -> ${out}${complete ? "" : " (INCOMPLETE — cache merge is authoritative)"}`);

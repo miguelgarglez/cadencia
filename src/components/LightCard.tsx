@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StorePoint } from "../lib/data.ts";
 import { colorHex, notation } from "../iala.ts";
+import { todSeconds } from "../lib/geo.ts";
 
 // The decode card: name, light-list notation, and a live timing strip whose
 // playhead sweeps in sync with the light on the chart.
@@ -27,21 +28,28 @@ export default function LightCard({
     return () => ro.disconnect();
   }, []);
 
-  // playhead sweeps live
+  // playhead sweeps live — same time-of-day clock the sea uses, so the card
+  // and the chart flash in the same phase
   const [t, setT] = useState(0);
+  const reduced = useRef(matchMedia("(prefers-reduced-motion: reduce)").matches).current;
   useEffect(() => {
+    if (reduced || l.period <= 0) { setT(0); return; }
     let raf = 0;
     const loop = () => {
-      setT(l.period > 0 ? (Date.now() / 1000) % l.period : 0);
+      setT(todSeconds() % l.period);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [l]);
+  }, [l, reduced]);
+
+  // keyboard users land inside the dialog
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { cardRef.current?.focus(); }, []);
 
   const name = point.name ?? point.ref ?? "unnamed light";
   const sectored = l.sectors.length > 0;
-  const tp = l.period > 0 ? t / l.period : 0;
+  const tp = l.period > 0 && !reduced ? t / l.period : -1;
   const W = w - 4, H = 30, y = 14;
   let acc = 0;
   const segs = l.segs.map((s) => {
@@ -52,7 +60,7 @@ export default function LightCard({
   });
 
   return (
-    <div className="card" role="dialog" aria-label={`light ${name}`}>
+    <div className="card" role="dialog" aria-label={`light ${name}`} ref={cardRef} tabIndex={-1}>
       <button className="x" onClick={onClose} aria-label="close">✕</button>
       <h2>{name}</h2>
       <div className="sub">
@@ -82,7 +90,7 @@ export default function LightCard({
               />
             ) : null,
           )}
-          {l.period > 0 && (
+          {tp >= 0 && (
             <>
               <line className="playhead-glow" x1={tp * W} x2={tp * W} y1={4} y2={H - 4} />
               <line className="playhead" x1={tp * W} x2={tp * W} y1={6} y2={H - 6} />

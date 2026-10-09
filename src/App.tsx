@@ -4,7 +4,8 @@ import { store, type StorePoint } from "./lib/data.ts";
 import { LightField } from "./lib/lightField.ts";
 import { setSoundEnabled, isSoundOn, pulse } from "./lib/sound.ts";
 import { bearingDeg } from "./lib/geo.ts";
-import { colorHex, type FlashColor } from "./iala.ts";
+import { colorHex, notation, type FlashColor, type Light } from "./iala.ts";
+import { WebHaptics } from "web-haptics";
 import LightCard from "./components/LightCard.tsx";
 import Hud from "./components/Hud.tsx";
 import Guide from "./components/Guide.tsx";
@@ -52,7 +53,11 @@ function restyle(map: MLMap) {
 function hashToView(): { center: [number, number]; zoom: number } | null {
   const m = location.hash.match(/^#(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(\d+(?:\.\d+)?)/);
   if (!m) return null;
-  return { center: [parseFloat(m[2]!), parseFloat(m[1]!)], zoom: parseFloat(m[3]!) };
+  const lat = parseFloat(m[1]!), lon = parseFloat(m[2]!), zoom = parseFloat(m[3]!);
+  // a shared link must never crash the map — reject impossible views
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(zoom)) return null;
+  if (Math.abs(lat) > 85 || Math.abs(lon) > 360 || zoom < 0 || zoom > 22) return null;
+  return { center: [lon, lat], zoom };
 }
 
 export default function App() {
@@ -60,6 +65,7 @@ export default function App() {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<MLMap | null>(null);
   const fieldRef = useRef<LightField | null>(null);
+  const hapticsRef = useRef(new WebHaptics());
   const vesselRef = useRef<{ el: HTMLDivElement; lat: number; lon: number } | null>(null);
   const vesselDrag = useRef(false);
 
@@ -71,9 +77,10 @@ export default function App() {
   const [sound, setSound] = useState(false);
   const [about, setAbout] = useState(false);
   const [guideOn, setGuideOn] = useState(() => !localStorage.getItem("cadencia-guide-done"));
-  const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null } | null>(null);
+  const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
 
   // ---------- map boot ----------
+  let pumpCleanup: (() => void) | null = null;
   useEffect(() => {
     const fromHash = hashToView();
     const start = fromHash ?? { center: [0.8, 47.5] as [number, number], zoom: 3.1 };
@@ -86,6 +93,7 @@ export default function App() {
       maxZoom: 16,
       attributionControl: { compact: true },
       fadeDuration: 0,
+      renderWorldCopies: false, // one dark sea — lights exist at canonical mercator only
     });
     mapRef.current = map;
     map.touchZoomRotate.disableRotation();
@@ -94,9 +102,15 @@ export default function App() {
     const field = new LightField(store);
     fieldRef.current = field;
 
+    // only fatal while booting — a stray tile error mid-session is not the sea going silent
+    map.on("error", () => { if (!map.loaded()) setDataError(true); });
+    const bootWatchdog = setTimeout(() => { if (!map.loaded()) setDataError(true); }, 20000);
+
     map.on("load", () => {
+      clearTimeout(bootWatchdog);
       restyle(map);
       map.addLayer(field);
+      field.setCalm(matchMedia("(prefers-reduced-motion: reduce)").matches);
       setReady(true);
       const sync = () => {
         const b = map.getBounds();
@@ -111,9 +125,11 @@ export default function App() {
       map.on("idle", () => updateInView(map, setInView));
       // the sea never holds still: continuous repaint drives the flash clock
       const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const pump = () => { map.triggerRepaint(); requestAnimationFrame(pump); };
-      if (reduceMotion) setInterval(() => map.triggerRepaint(), 1000);
-      else requestAnimationFrame(pump);
+      let raf = 0, slow: ReturnType<typeof setInterval> | null = null;
+      const pump = () => { map.triggerRepaint(); raf = requestAnimationFrame(pump); };
+      if (reduceMotion) slow = setInterval(() => map.triggerRepaint(), 1000);
+      else raf = requestAnimationFrame(pump);
+      pumpCleanup = () => { cancelAnimationFrame(raf); if (slow) clearInterval(slow); };
       map.on("moveend", sync);
       map.on("move", () => {
         updateOverlay();
@@ -138,6 +154,9 @@ export default function App() {
     (window as unknown as Record<string, unknown>).__cadencia = store;
     (window as unknown as Record<string, unknown>).__map = map;
     return () => {
+      pumpCleanup?.();
+      clearTimeout(bootWatchdog);
+      hapticsRef.current.destroy();
       map.remove();
       mapRef.current = null;
     };
@@ -161,11 +180,15 @@ export default function App() {
     fieldRef.current?.setSelectedColor(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
     const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
+    const moving = map.getZoom() !== cam.zoom || Math.abs(map.getCenter().lng - p.lon) > 0.001 || Math.abs(map.getCenter().lat - p.lat) > 0.001;
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) map.jumpTo(cam);
     else map.easeTo({ ...cam, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
     if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
-    if (hasSectors) spawnVessel(map, p);
-    else removeVessel();
+    if (hasSectors) {
+      // spawn only after the camera settles — unprojecting mid-flight strands it off-screen
+      if (moving) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
+      else spawnVessel(map, p);
+    } else removeVessel();
     setTimeout(updateOverlay, 950);
   }, []);
 
@@ -175,7 +198,9 @@ export default function App() {
     const el = document.createElement("div");
     el.className = "vessel";
     el.setAttribute("role", "slider");
-    el.setAttribute("aria-label", "vessel — drag to change bearing");
+    el.setAttribute("aria-label", "vessel — drag or use arrow keys to change bearing");
+    el.setAttribute("aria-valuemin", "0");
+    el.setAttribute("aria-valuemax", "360");
     el.tabIndex = 0;
     map.getCanvasContainer().appendChild(el);
     // spawn a fixed screen distance away so the vessel is always reachable
@@ -198,6 +223,25 @@ export default function App() {
     el.addEventListener("touchstart", (e) => e.stopPropagation());
     // pointer capture routes the release click back to the vessel — don't let it deselect
     el.addEventListener("click", (e) => e.stopPropagation());
+    // keyboard: arrows walk the vessel around the light on a fixed screen circle
+    el.addEventListener("keydown", (e) => {
+      if (!vesselRef.current) return;
+      const step = e.shiftKey ? 10 : 2;
+      let d = 0;
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") d = step;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowDown") d = -step;
+      else return;
+      e.preventDefault();
+      const c = map.project([p.lon, p.lat]);
+      const v = map.project([vesselRef.current.lon, vesselRef.current.lat]);
+      const ang = Math.atan2(v.y - c.y, v.x - c.x) + (d * Math.PI) / 180;
+      const r = Math.hypot(v.x - c.x, v.y - c.y) || 130;
+      const ll = map.unproject([c.x + Math.cos(ang) * r, c.y + Math.sin(ang) * r]);
+      vesselRef.current.lat = ll.lat;
+      vesselRef.current.lon = ll.lng;
+      positionVessel(map);
+      applyVesselBearing(p, ll.lat, ll.lng);
+    });
     el.addEventListener("pointermove", (e) => {
       if (!vesselDrag.current || !vesselRef.current) return;
       e.stopPropagation();
@@ -215,14 +259,22 @@ export default function App() {
   const applyVesselBearing = useCallback((p: StorePoint, lat: number, lon: number) => {
     const b = bearingDeg(p.lat, p.lon, lat, lon);
     let color: FlashColor | null = null;
+    let seen: Light | null = null;
     for (const l of p.lights) {
       for (const s of l.sectors) {
         const inArc = s.start <= s.end ? b >= s.start && b <= s.end : b >= s.start || b <= s.end;
-        if (inArc) color = l.colors[s.color] ?? l.colors[0] ?? "W";
+        if (inArc) { color = l.colors[s.color] ?? l.colors[0] ?? "W"; seen = l; }
       }
     }
-    setVesselInfo({ b, color });
-    fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : null);
+    setVesselInfo((prev) => {
+      // crossing a sector boundary is a tactile event
+      if (prev && prev.color !== color) hapticsRef.current.trigger("nudge");
+      return { b, color, seen };
+    });
+    // outside the charted sectors the light is dark — dim it, don't lie
+    fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : [0.02, 0.03, 0.05]);
+    vesselRef.current?.el.setAttribute("aria-valuenow", String(Math.round(b)));
+    vesselRef.current?.el.setAttribute("aria-valuetext", `bearing ${Math.round(b)} degrees${color ? `, light shows ${color}` : ", outside charted sectors"}`);
     updateOverlay();
   }, []);
 
@@ -254,7 +306,8 @@ export default function App() {
     if (!p) { positionVessel(map); return; }
     const c = map.project([p.lon, p.lat]);
     const zoom = map.getZoom();
-    const pxPerNm = (156543.03392 * Math.cos((p.lat * Math.PI) / 180)) / Math.pow(2, zoom) / 1852 * 1000;
+    const metersPerPx = (156543.03392 * Math.cos((p.lat * Math.PI) / 180)) / Math.pow(2, zoom);
+    const pxPerNm = 1852 / metersPerPx;
     for (const l of p.lights) {
       if (!l.sectors.length) continue;
       const rNm = l.rangeNm ?? 8;
@@ -332,10 +385,11 @@ export default function App() {
 
   const vesselNote = useMemo(() => {
     if (!vesselInfo || !selected) return null;
-    const { b, color } = vesselInfo;
-    if (!color) return `bearing ${Math.round(b)}° — outside the charted sectors, this light would not help you`;
-    const word = color === "W" ? "white" : color === "R" ? "red" : color === "G" ? "green" : color.toLowerCase();
-    return `bearing ${Math.round(b)}° — from here the light shows ${word}`;
+    const { b, color, seen } = vesselInfo;
+    if (!color || !seen) return `bearing ${Math.round(b)}° — outside the charted sectors, this light would not help you`;
+    const word = color === "W" ? "white" : color === "R" ? "red" : color === "G" ? "green" : color === "Y" ? "yellow" : color === "Bu" ? "blue" : "violet";
+    const which = seen !== selected.light ? ` (${notation(seen)})` : "";
+    return `bearing ${Math.round(b)}° — from here the light shows ${word}${which}`;
   }, [vesselInfo, selected]);
 
   return (
@@ -344,8 +398,17 @@ export default function App() {
       <canvas ref={overlayRef} className="map-wrap" style={{ pointerEvents: "none", zIndex: 8 }} />
       {!ready && (
         <div className="loading" role="status">
-          <div className="pulse" />
-          <div className="word">LISTENING TO THE SEA</div>
+          {dataError ? (
+            <>
+              <div className="word">THE SEA DIDN'T ANSWER</div>
+              <button className="act" onClick={() => location.reload()}>try again</button>
+            </>
+          ) : (
+            <>
+              <div className="pulse" />
+              <div className="word">LISTENING TO THE SEA</div>
+            </>
+          )}
         </div>
       )}
       <Hud

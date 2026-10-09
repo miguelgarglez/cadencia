@@ -14,8 +14,9 @@ export interface Seg {
 export interface Light {
   char: string; // raw character tag, verbatim
   group: number[]; // [3] or [2,1]
-  period: number; // seconds
-  segs: Seg[]; // one full period, sums to `period`
+  period: number; // seconds — the full rendered cycle
+  tagPeriod?: number; // original `period` tag when the cycle was unrolled (alternating lights)
+  segs: Seg[]; // one full cycle, sums to `period`
   colors: FlashColor[];
   sectors: { start: number; end: number; color: number }[]; // degrees true
   rangeNm?: number;
@@ -56,17 +57,21 @@ const MORSE: Record<string, string> = {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-// ---------- explicit sequence: "0.3+(5.7),0.3+(2.7)" means 0.3 lit, 5.7 eclipse
+// ---------- explicit sequence: "0.3+(5.7),0.3+(2.7)" or chained "0.8+(1.2)+0.8+(3.2)"
+// bare numbers are lit, parenthesized numbers are eclipses; terms join with + , ;
 function parseSequence(seq: string, period: number): Seg[] | null {
-  const parts = seq.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
   const segs: Seg[] = [];
-  for (const part of parts) {
-    const m = part.match(/^(\d+(?:\.\d+)?)\s*\+\s*\(?\s*(\d+(?:\.\d+)?)\s*\)?$/) ?? part.match(/^(\d+(?:\.\d+)?)$/);
+  const re = /\(\s*(\d+(?:\.\d+)?)\s*\)|(\d+(?:\.\d+)?)/y;
+  let i = 0;
+  while (i < seq.length) {
+    const ch = seq[i]!;
+    if (ch === "+" || ch === "," || ch === ";" || ch === " " || ch === "\t") { i++; continue; }
+    re.lastIndex = i;
+    const m = re.exec(seq);
     if (!m) return null;
-    const lit = parseFloat(m[1]!);
-    const dark = m[2] != null && m.length > 2 ? parseFloat(m[2]) : null;
-    segs.push({ level: 1, dur: lit, color: 0 });
-    if (dark != null && dark > 0) segs.push({ level: 0, dur: dark, color: 0 });
+    if (m[1] != null) segs.push({ level: 0, dur: parseFloat(m[1]), color: 0 });
+    else segs.push({ level: 1, dur: parseFloat(m[2]!), color: 0 });
+    i = re.lastIndex;
   }
   if (!segs.length) return null;
   const total = segs.reduce((a, s) => a + s.dur, 0);
@@ -216,26 +221,27 @@ export function parseCharacter(raw: string): CharParts | null {
   };
 }
 
-export function synthesize(parts: CharParts, period: number): Seg[] {
+export function synthesize(parts: CharParts, period: number): { segs: Seg[]; periods: number } {
   const P = period > 0 ? period : 6;
+  const one = (segs: Seg[]) => ({ segs, periods: 1 });
   switch (parts.base) {
     case "F":
-      return [{ level: 1, dur: P, color: 0 }];
+      return one([{ level: 1, dur: P, color: 0 }]);
     case "Iso":
-      return [
+      return one([
         { level: 1, dur: P / 2, color: 0 },
         { level: 0, dur: P / 2, color: 0 },
-      ];
+      ]);
     case "Oc":
-      return occulting(parts.group.length ? parts.group : [1], P);
+      return one(occulting(parts.group.length ? parts.group : [1], P));
     case "LFl":
-      return flashes(parts.group.length ? parts.group : [1], P, clamp(P * 0.15, 1.2, 3), clamp(P * 0.1, 0.8, 2));
+      return one(flashes(parts.group.length ? parts.group : [1], P, clamp(P * 0.15, 1.2, 3), clamp(P * 0.1, 0.8, 2)));
     case "FFl": {
       const fd = clamp(P * 0.1, 0.5, 2);
-      return [
+      return one([
         { level: 2, dur: fd, color: 0 },
         { level: 1, dur: P - fd, color: 0 },
-      ];
+      ]);
     }
     case "Q":
     case "VQ":
@@ -243,24 +249,43 @@ export function synthesize(parts: CharParts, period: number): Seg[] {
     case "IQ":
     case "IVQ":
     case "IUQ": {
-      const rate = parts.base[0] === "U" ? 0.3 : parts.base[0] === "V" ? 0.6 : 1.0;
-      const segs = quick(parts.group, P, rate, parts.base.startsWith("I"));
+      // rate by first letter: Q ~1/s, VQ ~2/s... wait: IALA = Q 50-60/min, VQ 100-120/min, UQ ~160/min
+      const rate = parts.base[0] === "U" ? 0.375 : parts.base[0] === "V" ? 0.5 : 1.0;
+      const interrupted = parts.base.startsWith("I");
+      const segs = quick(parts.group, P, rate, interrupted);
       if (parts.composite === "LFl") {
-        // "Q(6)+LFl": append one long flash if room
+        // "Q(6)+LFl": the long flash needs real room — re-run the quicks on a
+        // shortened window so the flash and a gap around it actually appear
         const fd = clamp(P * 0.15, 1.2, 3);
-        const used = segs.reduce((a, s) => a + s.dur, 0);
-        if (used + fd <= P) segs.push({ level: 1, dur: fd, color: 0 });
+        const q = quick(parts.group, P - fd, rate, interrupted);
+        const used = q.reduce((a, s) => a + s.dur, 0);
+        if (used < P - fd) q.push({ level: 0, dur: P - fd - used, color: 0 });
+        q.push({ level: 1, dur: fd, color: 0 });
+        return one(q);
       }
-      return segs;
+      return one(segs);
     }
     case "Mo": {
       const segs = morse(parts.moLetters || "A", P);
-      return segs.length ? segs : [{ level: 1, dur: P / 2, color: 0 }, { level: 0, dur: P / 2, color: 0 }];
+      return one(segs.length ? segs : [{ level: 1, dur: P / 2, color: 0 }, { level: 0, dur: P / 2, color: 0 }]);
     }
-    case "Al":
+    case "Al": {
+      // alternating: successive displays cycle through the colors. When one
+      // period has fewer lit displays than colors, the alternation spans whole
+      // periods — unroll enough cycles for every color to appear.
+      const C = Math.max(parts.colors.length, 1);
+      const base = flashes(parts.group.length ? parts.group : [1], P, clamp(P * 0.04, 0.25, 0.8), clamp(P * 0.08, 0.5, 1.6));
+      if (C <= 1) return one(base);
+      const litCount = base.reduce((a, s) => a + (s.level > 0 ? 1 : 0), 0);
+      const periods = litCount >= C ? 1 : Math.ceil(C / Math.max(litCount, 1));
+      const segs = periods === 1 ? base : Array.from({ length: periods }, () => base.map((s) => ({ ...s }))).flat();
+      let j = 0;
+      for (const s of segs) if (s.level > 0) s.color = j++ % C;
+      return { segs, periods };
+    }
     case "Fl":
     default: {
-      return flashes(parts.group.length ? parts.group : [1], P, clamp(P * 0.04, 0.25, 0.8), clamp(P * 0.08, 0.5, 1.6));
+      return one(flashes(parts.group.length ? parts.group : [1], P, clamp(P * 0.04, 0.25, 0.8), clamp(P * 0.08, 0.5, 1.6)));
     }
   }
 }
@@ -278,24 +303,36 @@ export function parseLights(tags: Record<string, string>): Light[] {
   for (const idx of [...idxs].sort()) {
     const p = (k: string) => tags[`seamark:light:${idx}${k}`];
     const rawChar = p("character") ?? "";
-    const period = parseFloat(p("period") ?? "") || guessPeriod(rawChar) || 6;
+    const tagPeriod = parseFloat(p("period") ?? "") || guessPeriod(rawChar) || 6;
     const groupTag = parseGroup(p("group") ?? "", rawChar);
     const group = groupTag.length ? groupTag : [1];
     const colors = parseColors(p("colour") ?? "", rawChar);
     const seqTag = p("sequence");
-    let segs: Seg[] | null = seqTag ? parseSequence(seqTag, period) : null;
+    let segs: Seg[] | null = seqTag ? parseSequence(seqTag, tagPeriod) : null;
     const parts = parseCharacter(rawChar);
     if (parts) {
       if (!parts.colors.length && colors.length) parts.colors = colors;
       if (!parts.group.length && groupTag.length) parts.group = groupTag;
+      // Morse letters may live in the group tag: `character=Mo, group=U`
+      if (parts.base === "Mo" && !parts.moLetters) {
+        const g = (p("group") ?? "").match(/[A-Za-z]+/);
+        if (g) parts.moLetters = g[0].toUpperCase();
+      }
     }
-    if (!segs) segs = parts ? synthesize(parts, period) : null;
+    let effPeriod = tagPeriod;
+    if (!segs) {
+      const syn = parts ? synthesize(parts, tagPeriod) : null;
+      if (syn) {
+        segs = syn.segs;
+        effPeriod = tagPeriod * syn.periods;
+      }
+    }
     let unparsed = false;
     if (!segs) {
       unparsed = true;
       segs = [
         { level: 1, dur: 0.5, color: 0 },
-        { level: 0, dur: period - 0.5, color: 0 },
+        { level: 0, dur: effPeriod - 0.5, color: 0 },
       ];
     }
     // normalize: drop zero durs, merge adjacent same-level/color
@@ -313,7 +350,8 @@ export function parseLights(tags: Record<string, string>): Light[] {
     out.push({
       char: rawChar,
       group,
-      period,
+      period: effPeriod,
+      ...(effPeriod !== tagPeriod ? { tagPeriod } : {}),
       segs: norm,
       colors: colors.length ? colors : parts?.colors.length ? parts.colors : ["W"],
       sectors: secs,
@@ -381,7 +419,7 @@ export function notation(l: Light): string {
   if (l.group.length && !/\(\d/.test(c) && l.group[0]! > 1) c += `(${l.group.join("+")})`;
   parts.push(c);
   if (l.colors.length && !/[WRGY]/i.test(c)) parts.push(l.colors.join(""));
-  if (l.period) parts.push(`${trimNum(l.period)}s`);
+  if (l.period) parts.push(`${trimNum(l.tagPeriod ?? l.period)}s`);
   if (l.heightM) parts.push(`${trimNum(l.heightM)}m`);
   if (l.rangeNm) parts.push(`${trimNum(l.rangeNm)}M`);
   return parts.join(" ");

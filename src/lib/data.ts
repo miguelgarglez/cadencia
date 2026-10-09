@@ -23,7 +23,7 @@ export class LightStore {
   points = new Map<string, StorePoint>();
   loaded = new Set<string>();
   pending = new Map<string, Promise<void>>();
-  failed = new Set<string>();
+  failedAt = new Map<string, number>();
   index: Index | null = null;
   onChange: (() => void) | null = null;
 
@@ -36,8 +36,13 @@ export class LightStore {
   }
 
   needBounds(w: number, s: number, e: number, n: number) {
+    const now = Date.now();
     const keys = cellsForBounds(w, s, e, n).filter((k) => {
-      if (this.loaded.has(k) || this.pending.has(k) || this.failed.has(k)) return false;
+      if (this.loaded.has(k) || this.pending.has(k)) return false;
+      // a failed cell earns a retry after a cooldown — transient 404s/5xx happen
+      const f = this.failedAt.get(k);
+      if (f != null && now - f < 45_000) return false;
+      if (f != null) this.failedAt.delete(k);
       // the index knows which cells exist — never 404-hunt empty ocean
       if (this.index && !(k in this.index.cells)) { this.loaded.add(k); return false; }
       return true;
@@ -77,12 +82,12 @@ export class LightStore {
       this.onChange?.();
     } catch {
       this.pending.delete(key);
-      this.failed.add(key);
+      this.failedAt.set(key, Date.now());
     }
   }
 
   get failedCells(): number {
-    return this.failed.size;
+    return this.failedAt.size;
   }
 }
 

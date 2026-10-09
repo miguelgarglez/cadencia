@@ -106,3 +106,68 @@ test("notation builds a light-list line", () => {
   });
   assert.equal(notation(l), "Fl(3) W 15s 107m 22M");
 });
+
+test("chained sequence terms parse: 0.8+(1.2)+0.8+(3.2)", () => {
+  const [l] = parseLights({
+    "seamark:light:character": "Fl",
+    "seamark:light:period": "6",
+    "seamark:light:sequence": "0.8+(1.2)+0.8+(3.2)",
+    "seamark:light:colour": "white",
+  });
+  const lit = l.segs.filter((s) => s.level === 1);
+  assert.equal(lit.length, 2);
+  assert.ok(Math.abs(sum(l.segs) - 6) < 0.01);
+  assert.ok(!l.unparsed);
+});
+
+test("morse letters come from the group tag: Mo group=U", () => {
+  const [l] = parseLights({
+    "seamark:light:character": "Mo",
+    "seamark:light:group": "U",
+    "seamark:light:period": "15",
+    "seamark:light:colour": "white",
+  });
+  // U = ..- → two short + one long lit segments
+  const ons = l.segs.filter((s) => s.level === 1);
+  assert.equal(ons.length, 3);
+  assert.ok(ons[2].dur > ons[0].dur * 2);
+});
+
+test("Q(6)+LFl keeps the long flash", () => {
+  const [l] = parseLights({
+    "seamark:light:character": "Q(6)+LFl",
+    "seamark:light:period": "15",
+    "seamark:light:colour": "white",
+  });
+  const ons = l.segs.filter((s) => s.level === 1);
+  assert.equal(ons.length, 7); // six quicks + one long
+  assert.ok(ons.at(-1).dur >= 1.2);
+  assert.ok(Math.abs(sum(l.segs) - 15) < 0.01);
+});
+
+test("alternating light cycles colors across periods", () => {
+  const [l] = parseLights({
+    "seamark:light:character": "Al.Fl",
+    "seamark:light:period": "10",
+    "seamark:light:colour": "white;green",
+  });
+  const ons = l.segs.filter((s) => s.level === 1);
+  assert.equal(ons.length, 2);
+  assert.equal(ons[0].color, 0); // white
+  assert.equal(ons[1].color, 1); // green
+  assert.equal(l.period, 20); // unrolled cycle
+  assert.equal(l.tagPeriod, 10);
+  assert.ok(notation(l).includes("10s"));
+});
+
+test("alternating group flashes stay inside one period", () => {
+  const [l] = parseLights({
+    "seamark:light:character": "Al.Fl(2)WR",
+    "seamark:light:period": "12",
+  });
+  const ons = l.segs.filter((s) => s.level === 1);
+  assert.equal(ons.length, 2);
+  assert.equal(ons[0].color, 0);
+  assert.equal(ons[1].color, 1);
+  assert.equal(l.period, 12);
+});

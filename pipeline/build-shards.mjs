@@ -10,27 +10,37 @@ const RAW = join(ROOT, "pipeline", "raw-lights.json");
 const OUTDIR = join(ROOT, "public", "lights");
 const CELL_LAT = 5, CELL_LON = 10; // shard cell size in degrees
 
+// the tile cache is the source of truth — a raw-lights.json can be stale or
+// come from a partial --rows worker, so cache merge always wins
 let raw;
-if (existsSync(RAW)) {
+const elements = [];
+const seen = new Set();
+const cacheFiles = ["cache", "cache-num"]
+  .flatMap((d) => {
+    const dir = join(ROOT, "pipeline", d);
+    return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => join(dir, f)) : [];
+  });
+for (const f of cacheFiles) {
+  const d = JSON.parse(readFileSync(f, "utf8"));
+  for (const el of d.elements ?? []) {
+    const lat = el.lat ?? el.center?.lat;
+    const lon = el.lon ?? el.center?.lon;
+    if (lat == null || lon == null) continue;
+    const id = `${el.type}/${el.id}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    elements.push({ id, type: el.type, lat, lon, tags: el.tags ?? {} });
+  }
+}
+if (elements.length) {
+  raw = { fetchedAt: new Date().toISOString(), count: elements.length, elements };
+  console.log(`merged ${elements.length} elements from ${cacheFiles.length} cached tiles`);
+} else if (existsSync(RAW)) {
+  console.warn("warning: no tile cache found — falling back to raw-lights.json, which may be a partial crawl");
   raw = JSON.parse(readFileSync(RAW, "utf8"));
 } else {
-  // merge whatever tiles are in cache (fetch may still be running)
-  const elements = [];
-  const seen = new Set();
-  const cacheDir = join(ROOT, "pipeline", "cache");
-  for (const f of readdirSync(cacheDir).filter((f) => f.endsWith(".json"))) {
-    const d = JSON.parse(readFileSync(join(cacheDir, f), "utf8"));
-    for (const el of d.elements ?? []) {
-      const lat = el.lat ?? el.center?.lat;
-      const lon = el.lon ?? el.center?.lon;
-      if (lat == null || lon == null) continue;
-      const id = `${el.type}/${el.id}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      elements.push({ id, type: el.type, lat, lon, tags: el.tags ?? {} });
-    }
-  }
-  raw = { fetchedAt: new Date().toISOString(), count: elements.length, elements };
+  console.error("no data: run pipeline/fetch.mjs first");
+  process.exit(1);
 }
 const cells = new Map(); // key -> { points: [], names: string[] }
 const stats = { elements: raw.count, points: 0, lights: 0, uncharted: 0, unparsed: 0, chars: new Map(), shards: 0 };

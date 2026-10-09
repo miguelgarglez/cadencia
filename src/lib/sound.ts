@@ -39,8 +39,11 @@ function ensure(): AudioContext {
 export function setSoundEnabled(on: boolean) {
   enabled = on;
   const c = ensure();
-  if (c.state === "suspended") c.resume();
   seaGain?.gain.setTargetAtTime(on ? 0.05 : 0, c.currentTime, 0.6);
+  // suspend the whole graph when off — the swell LFO and any in-flight pulses
+  // must not leak sound behind the mute switch
+  if (on) void c.resume();
+  else setTimeout(() => { if (!enabled) void c.suspend(); }, 700);
 }
 
 export function isSoundOn() {

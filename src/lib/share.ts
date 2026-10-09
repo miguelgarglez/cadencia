@@ -66,7 +66,7 @@ export function shareCard(p: StorePoint) {
 
   c.font = "300 22px 'IBM Plex Mono', monospace";
   c.fillStyle = "#2e4a66";
-  c.fillText("cadencia.vercel.app", 80, H - 60);
+  c.fillText("cadencia-lights.vercel.app", 80, H - 60);
 
   cv.toBlob((blob) => {
     if (!blob) return;

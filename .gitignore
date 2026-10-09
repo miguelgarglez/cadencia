@@ -1,7 +1,9 @@
 node_modules/
 dist/
 pipeline/cache/
+pipeline/cache-num/
 pipeline/raw-lights.json
+pipeline/raw-partial.json
 *.local
 .DS_Store
 .vercel

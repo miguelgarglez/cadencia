@@ -62,3 +62,8 @@ export function destPoint(lat: number, lon: number, bearingDeg: number, distKm: 
   const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(d) * Math.cos(φ1), Math.cos(d) - Math.sin(φ1) * Math.sin(φ2));
   return [(φ2 * 180) / Math.PI, ((λ2 * 180) / Math.PI + 540) % 360 - 180];
 }
+
+// Seconds since UTC midnight — the shared clock every viewer's sea keeps.
+export function todSeconds(): number {
+  return (Date.now() / 1000) % 86400;
+}

@@ -27,6 +27,7 @@ uniform float u_zoom;
 uniform vec3 u_sun;        // subsolar direction unit vector
 uniform float u_selected;  // point index or -1
 uniform vec3 u_selColor;   // override color for selected (sector bearing), or vec3(-1)
+uniform float u_calm;      // reduced motion: ember only, no flashing
 uniform highp sampler2D u_seq;
 
 out vec2 v_uv;
@@ -79,8 +80,9 @@ void main() {
   float lon = (a_merc.x * 360.0 - 180.0) * 3.14159265 / 180.0;
   vec3 dir = vec3(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat));
   float sunEl = dot(dir, u_sun);
-  float night = smoothstep(0.15, -0.25, sunEl); // 1 at night, 0 in day
+  float night = 1.0 - smoothstep(-0.25, 0.15, sunEl); // 1 at night, 0 in day
   float dayFactor = mix(0.22, 1.0, night);
+  if (u_calm > 0.5 && kind == 0.0) level = 0.0; // calm sea: embers only
 
   v_level = level * dayFactor;
   v_color = col;
@@ -134,6 +136,7 @@ export class LightField implements CustomLayerInterface {
   private pointIndex = new Map<string, number>();
   private selectedIdx = -1;
   private selColor: [number, number, number] = [-1, -1, -1];
+  private calm = false;
   private startWall = Date.now() / 1000;
   private startPerf = performance.now() / 1000;
 
@@ -157,7 +160,7 @@ export class LightField implements CustomLayerInterface {
       return;
     }
     this.prog = prog;
-    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_seq"])
+    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_calm", "u_seq"])
       this.u[name] = gl.getUniformLocation(prog, name);
 
     this.vao = gl.createVertexArray();
@@ -284,8 +287,27 @@ export class LightField implements CustomLayerInterface {
     this.map?.triggerRepaint();
   }
 
+  setCalm(on: boolean) {
+    this.calm = on;
+    this.map?.triggerRepaint();
+  }
+
   prerender() {}
-  onRemove() {}
+  onRemove() {
+    if (this.rebuildTimer) { clearTimeout(this.rebuildTimer); this.rebuildTimer = null; }
+    this.store.onChange = null;
+    const gl = this.gl;
+    if (gl) {
+      for (const b of this.instBufs) gl.deleteBuffer(b);
+      this.instBufs = [];
+      if (this.seqTex) gl.deleteTexture(this.seqTex);
+      if (this.vao) gl.deleteVertexArray(this.vao);
+      if (this.prog) gl.deleteProgram(this.prog);
+    }
+    this.instCount = 0;
+    this.gl = null;
+    this.map = null;
+  }
 
   render(_gl: WebGL2RenderingContext | WebGLRenderingContext, arg: unknown) {
     const gl = this.gl;
@@ -319,6 +341,7 @@ export class LightField implements CustomLayerInterface {
     gl.uniform3f(this.u.u_sun!, Math.cos(latR) * Math.cos(lonR), Math.cos(latR) * Math.sin(lonR), Math.sin(latR));
     gl.uniform1f(this.u.u_selected!, this.selectedIdx);
     gl.uniform3fv(this.u.u_selColor!, this.selColor);
+    gl.uniform1f(this.u.u_calm!, this.calm ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.seqTex);
     gl.uniform1i(this.u.u_seq!, 0);
