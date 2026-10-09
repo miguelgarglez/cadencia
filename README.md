@@ -2,9 +2,9 @@
 
 **Every charted lighthouse on Earth, blinking its real coded rhythm, on one dark sea.**
 
-cadencia is a live nautical chart of the ~62,000 navigational lights recorded in
+cadencia is a live nautical chart of the ~100,000 navigational lights recorded in
 OpenStreetMap. Every dot is a real seamark — a lighthouse, a buoy, a leading
-light — and it blinks the exact pattern a mariner would see: `Fl(3) 15s` flashes
+light — and it blinks the pattern a mariner would see: `Fl(3) 15s` flashes
 three times every fifteen seconds, `Oc(2)WRG` eclipses twice and changes color
 with your bearing, `Mo(A)` taps out morse alpha. Nothing is animated by hand;
 the data carries its own timeline, and every viewer sees the same sea at the
@@ -14,9 +14,11 @@ same second.
 
 - **Data** — `pipeline/fetch.mjs` walks the planet in 20° tiles against the
   Overpass API, collecting every object tagged `seamark:light:character` plus
-  uncharted `man_made=lighthouse` towers, then `pipeline/build-shards.mjs`
-  deduplicates them and packs the result into static 5°×10° JSON shards under
-  `public/lights/`. The browser loads only the shards under the viewport.
+  uncharted `man_made=lighthouse` towers; `pipeline/fetch-num.mjs` follows with
+  the numbered `seamark:light:N:*` sub-lights that carry sector arcs. Then
+  `pipeline/build-shards.mjs` deduplicates everything and packs it into static
+  5°×10° JSON shards under `public/lights/`. The browser loads only the shards
+  under the viewport.
 - **The language of lights** — `src/iala.ts` is a small IALA light-characteristic
   parser: character (`Fl`, `Oc`, `Iso`, `LFl`, `Q`, `VQ`, `UQ`, `Mo`, `Al`, `FFl`),
   groupings, colors, periods, explicit `sequences` like `0.5+(4.5)`, and
@@ -28,9 +30,13 @@ same second.
   clocks tick off one shared UTC beat. Daylight genuinely dims the field — the
   shader checks the subsolar point, because a light competes with the sun.
 - **The vessel** — sectored lights (the famous WRG leading lights) show
-  different colors to different bearings. Click one and a small vessel appears;
-  drag it around the light and the color, the sector arcs, and the card all
-  answer like a real approach.
+  different colors to different bearings. Select one and a vessel spawns on
+  open water beside it; drag it — or drag the rose on the sheet, or steer with
+  arrow keys — and the color, the sector arcs, the notation, and the chart dot
+  itself all answer like a real approach.
+- **Shareable** — the URL hash carries `#lat,lon,zoom/light-id`, so any view and
+  any selected light is a link. `save card` renders a PNG of the sheet in the
+  chart's own visual language.
 
 ## run it
 
@@ -43,8 +49,9 @@ To rebuild the data from scratch (takes a while, it's the whole planet):
 
 ```bash
 node pipeline/fetch.mjs          # tiled Overpass crawl -> pipeline/cache/
+node pipeline/fetch-num.mjs      # numbered sub-light crawl -> pipeline/cache-num/
 node pipeline/build-shards.mjs   # -> public/lights/*.json + index.json
-node test/iala.test.mjs          # parser tests
+node --test test/*.test.mjs      # parser tests
 ```
 
 ## stack

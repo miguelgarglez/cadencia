@@ -111,8 +111,12 @@ canvas.map-wrap { width: 100%; height: 100%; } /* replaced element: inset alone 
 
 @media (max-width: 640px) {
   .dock { font-size: 10.5px; padding-right: 30px; }
-  .dock .cell { padding: 0 10px; }
+  .dock .cell { padding: 0 8px; }
   .dock .cell.utc { display: none; }
+}
+@media (max-width: 480px) {
+  .dock { font-size: 9.8px; }
+  .dock .cell { padding: 0 6px; gap: 5px; }
 }
 
 /* ---------- light sheet: a light-list entry risen from the bottom ---------- */
