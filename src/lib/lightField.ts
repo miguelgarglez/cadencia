@@ -3,10 +3,14 @@
 
 import type { CustomLayerInterface, Map as MLMap } from "maplibre-gl";
 import type { StorePoint } from "./data.ts";
+import type { Light } from "../iala.ts";
 import { subSolar } from "./geo.ts";
 
 const MAX_SEGMENTS = 1024 * 512; // texture rows capacity (RGBA32F texels)
 const TEX_W = 512;
+// row 0 of the seq texture is reserved for the selected light's active
+// sub-light timeline — real point timelines start at texel TEX_W.
+const OVERRIDE_TEXELS = TEX_W;
 
 const COLOR_IDS: Record<string, number> = { W: 0, R: 1, G: 2, Y: 3, Bu: 4, Vi: 5 };
 
@@ -27,6 +31,7 @@ uniform float u_zoom;
 uniform vec3 u_sun;        // subsolar direction unit vector
 uniform float u_selected;  // point index or -1
 uniform vec3 u_selColor;   // override color for selected (sector bearing), or vec3(-1)
+uniform vec2 u_selSeq;     // selected override: seqLen, period — row 0 of u_seq (0 = off)
 uniform float u_calm;      // reduced motion: ember only, no flashing
 uniform highp sampler2D u_seq;
 
@@ -42,18 +47,21 @@ void main() {
   float colorsPacked = mod(meta, 4096.0);
   v_kind = kind;
 
+  float sel = abs(a_idx - u_selected) < 0.5 ? 1.0 : 0.0;
   float level = 1.0;
   int colIdx = 0;
   if (kind == 1.0) {
     level = 0.35;
-  } else if (a_timing.x <= 0.001) {
+  } else if (a_timing.x <= 0.001 && u_selSeq.y <= 0.001) {
     level = 1.0;
   } else {
-    float t = mod(u_time, a_timing.x);
+    float period = a_timing.x;
     float start = a_timing.y;
     float len = a_timing.z;
+    if (sel > 0.5 && u_selSeq.x > 0.5) { start = 0.0; len = u_selSeq.x; period = u_selSeq.y; }
+    float t = mod(u_time, period);
     level = 0.0;
-    for (float i = 0.0; i < 96.0; i++) {
+    for (float i = 0.0; i < ${TEX_W}.0; i++) {
       if (i >= len) break;
       vec4 seg = texelFetch(u_seq, ivec2(int(mod(start + i, ${TEX_W}.0)), int((start + i) / ${TEX_W}.0)), 0);
       if (t >= seg.x && t < seg.y) {
@@ -72,7 +80,6 @@ void main() {
            : c == 5 ? vec3(0.78,0.62,1.0)
            : vec3(1.0,0.93,0.78);
 
-  float sel = abs(a_idx - u_selected) < 0.5 ? 1.0 : 0.0;
   if (sel > 0.5 && u_selColor.x >= 0.0) col = u_selColor;
 
   // solar dimming: lights read strongly in darkness, faint in daylight
@@ -136,9 +143,13 @@ export class LightField implements CustomLayerInterface {
   private pointIndex = new Map<string, number>();
   private selectedIdx = -1;
   private selColor: [number, number, number] = [-1, -1, -1];
+  private selSeqLen = 0;
+  private selSeqPeriod = 0;
+  private activeLight: Light | null = null;
   private calm = false;
   private startWall = Date.now() / 1000;
   private startPerf = performance.now() / 1000;
+  private canvas: HTMLCanvasElement | null = null;
 
   constructor(store: { points: Map<string, StorePoint>; onChange: (() => void) | null }) {
     this.store = store;
@@ -149,6 +160,27 @@ export class LightField implements CustomLayerInterface {
     const gl = glArg as WebGL2RenderingContext;
     this.map = map;
     this.gl = gl;
+    const canvas = map.getCanvas();
+    this.canvas = canvas;
+    canvas.addEventListener("webglcontextlost", this.onCtxLost);
+    canvas.addEventListener("webglcontextrestored", this.onCtxRestored);
+    this.initGL(gl);
+  }
+
+  // preventDefault is required for the contextrestored event to fire at all
+  private onCtxLost = (e: Event) => e.preventDefault();
+
+  private onCtxRestored = () => {
+    // the old GPU objects died with the context — drop the handles and rebuild
+    this.prog = null;
+    this.vao = null;
+    this.seqTex = null;
+    this.instBufs = [];
+    if (this.gl) this.initGL(this.gl);
+    this.map?.triggerRepaint();
+  };
+
+  private initGL(gl: WebGL2RenderingContext) {
     const vs = this.shader(gl.VERTEX_SHADER, VS);
     const fs = this.shader(gl.FRAGMENT_SHADER, FS);
     const prog = gl.createProgram()!;
@@ -160,7 +192,7 @@ export class LightField implements CustomLayerInterface {
       return;
     }
     this.prog = prog;
-    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_calm", "u_seq"])
+    for (const name of ["u_matrix", "u_time", "u_viewport", "u_px", "u_zoom", "u_sun", "u_selected", "u_selColor", "u_selSeq", "u_calm", "u_seq"])
       this.u[name] = gl.getUniformLocation(prog, name);
 
     this.vao = gl.createVertexArray();
@@ -181,6 +213,7 @@ export class LightField implements CustomLayerInterface {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, TEX_W, MAX_SEGMENTS / TEX_W, 0, gl.RGBA, gl.FLOAT, null);
     gl.bindVertexArray(null);
     this.rebuild();
+    if (this.activeLight) this.uploadActive(this.activeLight);
   }
 
   private shader(type: number, src: string) {
@@ -213,7 +246,7 @@ export class LightField implements CustomLayerInterface {
     const meta = new Float32Array(n);
     const idx = new Float32Array(n);
     this.pointIndex.clear();
-    let segCursor = 0;
+    let segCursor = OVERRIDE_TEXELS;
     for (let i = 0; i < n; i++) {
       const p = pts[i]!;
       this.pointIndex.set(p.id, i);
@@ -239,6 +272,7 @@ export class LightField implements CustomLayerInterface {
       const seqStart = segCursor;
       let cum = 0;
       for (const s of l.segs) {
+        if (segCursor >= MAX_SEGMENTS) break;
         const j = segCursor * 4;
         this.seqData[j] = cum;
         cum += s.dur;
@@ -249,7 +283,7 @@ export class LightField implements CustomLayerInterface {
       }
       timing[i * 3] = l.period;
       timing[i * 3 + 1] = seqStart;
-      timing[i * 3 + 2] = l.segs.length;
+      timing[i * 3 + 2] = Math.min(l.segs.length, TEX_W);
     }
     this.instCount = n;
 
@@ -272,9 +306,39 @@ export class LightField implements CustomLayerInterface {
     gl.bindVertexArray(null);
 
     gl.bindTexture(gl.TEXTURE_2D, this.seqTex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, Math.ceil(segCursor / TEX_W) || 1, gl.RGBA, gl.FLOAT, this.seqData.subarray(0, (Math.ceil(segCursor / TEX_W) || 1) * TEX_W * 4));
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, Math.ceil(segCursor / TEX_W), gl.RGBA, gl.FLOAT, this.seqData.subarray(0, Math.ceil(segCursor / TEX_W) * TEX_W * 4));
     gl.bindTexture(gl.TEXTURE_2D, null);
     this.dirty = false;
+  }
+
+  // Switch the selected point's rendered rhythm to the sub-light the vessel
+  // actually sees from its bearing (or null → back to the primary light).
+  setActiveLight(l: Light | null) {
+    this.activeLight = l;
+    if (l) this.uploadActive(l);
+    else { this.selSeqLen = 0; this.selSeqPeriod = 0; }
+    this.map?.triggerRepaint();
+  }
+
+  private uploadActive(l: Light) {
+    const gl = this.gl;
+    if (!gl || !this.seqTex) return;
+    let cum = 0;
+    const n = Math.min(l.segs.length, OVERRIDE_TEXELS);
+    for (let i = 0; i < n; i++) {
+      const s = l.segs[i]!;
+      const j = i * 4;
+      this.seqData[j] = cum;
+      cum += s.dur;
+      this.seqData[j + 1] = cum;
+      this.seqData[j + 2] = s.level === 2 ? 1.4 : s.level;
+      this.seqData[j + 3] = Math.min(3, s.color);
+    }
+    this.selSeqLen = n;
+    this.selSeqPeriod = l.period;
+    gl.bindTexture(gl.TEXTURE_2D, this.seqTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, 1, gl.RGBA, gl.FLOAT, this.seqData.subarray(0, TEX_W * 4));
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   setSelected(id: string | null) {
@@ -296,6 +360,11 @@ export class LightField implements CustomLayerInterface {
   onRemove() {
     if (this.rebuildTimer) { clearTimeout(this.rebuildTimer); this.rebuildTimer = null; }
     this.store.onChange = null;
+    if (this.canvas) {
+      this.canvas.removeEventListener("webglcontextlost", this.onCtxLost);
+      this.canvas.removeEventListener("webglcontextrestored", this.onCtxRestored);
+      this.canvas = null;
+    }
     const gl = this.gl;
     if (gl) {
       for (const b of this.instBufs) gl.deleteBuffer(b);
@@ -341,6 +410,7 @@ export class LightField implements CustomLayerInterface {
     gl.uniform3f(this.u.u_sun!, Math.cos(latR) * Math.cos(lonR), Math.cos(latR) * Math.sin(lonR), Math.sin(latR));
     gl.uniform1f(this.u.u_selected!, this.selectedIdx);
     gl.uniform3fv(this.u.u_selColor!, this.selColor);
+    gl.uniform2f(this.u.u_selSeq!, this.selSeqLen, this.selSeqPeriod);
     gl.uniform1f(this.u.u_calm!, this.calm ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.seqTex);

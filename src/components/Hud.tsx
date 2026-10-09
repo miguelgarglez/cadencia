@@ -13,6 +13,7 @@ export default function Hud({
   onHaptics,
   onAbout,
   onGuide,
+  onLight,
 }: {
   inView: number;
   total: number;
@@ -22,6 +23,7 @@ export default function Hud({
   onHaptics: () => void;
   onAbout: () => void;
   onGuide: () => void;
+  onLight: () => void;
 }) {
   const [utc, setUtc] = useState("");
   useEffect(() => {
@@ -76,6 +78,14 @@ export default function Hud({
         >
           <span className="dot" aria-hidden />
           sound
+        </button>
+        <button
+          className="cell"
+          data-act="light"
+          onClick={onLight}
+          title="select the nearest light (press L to cycle)"
+        >
+          a light
         </button>
         <button className="cell" onClick={onGuide} title="replay the first-run guide">guide</button>
         <button className="cell" onClick={onAbout} title="about this chart">about</button>

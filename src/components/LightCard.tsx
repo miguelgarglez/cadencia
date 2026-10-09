@@ -154,6 +154,7 @@ export default function LightCard({
           {l.heightM != null && <span>height <b>{l.heightM} m</b></span>}
           {l.group.length > 1 && <span>group <b>{l.group.join("+")}</b></span>}
           {l.unparsed && <span>unusual signal — shown as a single flash</span>}
+          {!l.unparsed && l.inferred && <span>approx — period reconstructed</span>}
           {l.tagPeriod != null && <span>alternates over <b>{l.period}s</b></span>}
         </div>
         {vesselNote && <div className="note peekable">{vesselNote}.</div>}

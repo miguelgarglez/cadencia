@@ -26,6 +26,8 @@ export class LightStore {
   failedAt = new Map<string, number>();
   index: Index | null = null;
   onChange: (() => void) | null = null;
+  onFail: (() => void) | null = null;
+  private lastNeed: [number, number, number, number] | null = null;
 
   async init(): Promise<Index> {
     if (this.index) return this.index;
@@ -37,6 +39,7 @@ export class LightStore {
 
   needBounds(w: number, s: number, e: number, n: number) {
     const now = Date.now();
+    this.lastNeed = [w, s, e, n];
     const keys = cellsForBounds(w, s, e, n).filter((k) => {
       if (this.loaded.has(k) || this.pending.has(k)) return false;
       // a failed cell earns a retry after a cooldown — transient 404s/5xx happen
@@ -83,7 +86,15 @@ export class LightStore {
     } catch {
       this.pending.delete(key);
       this.failedAt.set(key, Date.now());
+      this.onFail?.();
     }
+  }
+
+  // wipe the failure cooldowns and re-request the last seen viewport —
+  // this is what the error tray's retry button calls
+  retry() {
+    this.failedAt.clear();
+    if (this.lastNeed) this.needBounds(...this.lastNeed);
   }
 
   get failedCells(): number {

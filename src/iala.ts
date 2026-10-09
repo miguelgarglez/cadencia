@@ -21,7 +21,8 @@ export interface Light {
   sectors: { start: number; end: number; color: number }[]; // degrees true
   rangeNm?: number;
   heightM?: number;
-  unparsed?: boolean; // fell back to a single flash
+  unparsed?: boolean; // tags couldn't be decoded — rhythm is a placeholder
+  inferred?: boolean; // decoded, but the period was assumed rather than tagged
 }
 
 export interface LightPoint {
@@ -59,7 +60,9 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 
 // ---------- explicit sequence: "0.3+(5.7),0.3+(2.7)" or chained "0.8+(1.2)+0.8+(3.2)"
 // bare numbers are lit, parenthesized numbers are eclipses; terms join with + , ;
-function parseSequence(seq: string, period: number): Seg[] | null {
+// Returns the segments and the period the sequence itself implies (scaled to
+// `period` when a tag supplied one).
+function parseSequence(seq: string, period: number): { segs: Seg[]; period: number } | null {
   const segs: Seg[] = [];
   const re = /\(\s*(\d+(?:\.\d+)?)\s*\)|(\d+(?:\.\d+)?)/y;
   let i = 0;
@@ -75,11 +78,13 @@ function parseSequence(seq: string, period: number): Seg[] | null {
   }
   if (!segs.length) return null;
   const total = segs.reduce((a, s) => a + s.dur, 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
   if (period > 0 && Math.abs(total - period) > 0.01) {
     const k = period / total;
     for (const s of segs) s.dur *= k;
+    return { segs, period };
   }
-  return segs;
+  return { segs, period: total };
 }
 
 function flashes(group: number[], period: number, flashDur: number, withinGap: number): Seg[] {
@@ -145,8 +150,11 @@ function quick(group: number[], period: number, rate: number, interrupted: boole
       }
     });
   } else {
-    run(Math.floor(total));
-    if (interrupted && used < period) { segs.push({ level: 0, dur: period - used, color: 0 }); }
+    // interrupted variants must leave a real dark stretch — run flashes
+    // through ~55% of the cycle, then hold the interruption
+    const count = interrupted ? Math.floor((period * 0.55) / rate) : Math.floor(total);
+    run(count);
+    if (used < period) { segs.push({ level: 0, dur: period - used, color: 0 }); }
   }
   const sum = segs.reduce((a, s) => a + s.dur, 0);
   if (Math.abs(sum - period) > 0.01) for (const s of segs) s.dur *= period / sum;
@@ -249,8 +257,8 @@ export function synthesize(parts: CharParts, period: number): { segs: Seg[]; per
     case "IQ":
     case "IVQ":
     case "IUQ": {
-      // rate by first letter: Q ~1/s, VQ ~2/s... wait: IALA = Q 50-60/min, VQ 100-120/min, UQ ~160/min
-      const rate = parts.base[0] === "U" ? 0.375 : parts.base[0] === "V" ? 0.5 : 1.0;
+      // rate by the flash-class suffix, not the I prefix: IALA = Q 50-60/min, VQ 100-120/min, UQ ~160/min
+      const rate = /UQ$/i.test(parts.base) ? 0.375 : /VQ$/i.test(parts.base) ? 0.5 : 1.0;
       const interrupted = parts.base.startsWith("I");
       const segs = quick(parts.group, P, rate, interrupted);
       if (parts.composite === "LFl") {
@@ -303,12 +311,18 @@ export function parseLights(tags: Record<string, string>): Light[] {
   for (const idx of [...idxs].sort()) {
     const p = (k: string) => tags[`seamark:light:${idx}${k}`];
     const rawChar = p("character") ?? "";
-    const tagPeriod = parseFloat(p("period") ?? "") || guessPeriod(rawChar) || 6;
+    const rawPeriod = parseFloat(p("period") ?? "");
+    const hadPeriod = Number.isFinite(rawPeriod) && rawPeriod > 0;
+    const seqTag = p("sequence");
+    // an explicit sequence carries its own timing — derive the period from it
+    // when the tag doesn't supply one, instead of inventing a cycle length
+    const seqRes = seqTag ? parseSequence(seqTag, hadPeriod ? rawPeriod : 0) : null;
+    const charPeriod = guessPeriod(rawChar);
+    const tagPeriod = (hadPeriod ? rawPeriod : 0) || seqRes?.period || charPeriod || 6;
     const groupTag = parseGroup(p("group") ?? "", rawChar);
     const group = groupTag.length ? groupTag : [1];
     const colors = parseColors(p("colour") ?? "", rawChar);
-    const seqTag = p("sequence");
-    let segs: Seg[] | null = seqTag ? parseSequence(seqTag, tagPeriod) : null;
+    let segs: Seg[] | null = seqRes?.segs ?? null;
     const parts = parseCharacter(rawChar);
     if (parts) {
       if (!parts.colors.length && colors.length) parts.colors = colors;
@@ -327,22 +341,30 @@ export function parseLights(tags: Record<string, string>): Light[] {
         effPeriod = tagPeriod * syn.periods;
       }
     }
+    // a sequence tag that failed to parse means the timing is reconstructed,
+    // not charted — flag it; likewise for a period we had to assume
+    const inferred = !hadPeriod && !seqRes && !charPeriod || (!!seqTag && !seqRes);
     let unparsed = false;
     if (!segs) {
       unparsed = true;
       segs = [
         { level: 1, dur: 0.5, color: 0 },
-        { level: 0, dur: effPeriod - 0.5, color: 0 },
+        { level: 0, dur: Math.max(0.5, effPeriod - 0.5), color: 0 },
       ];
     }
-    // normalize: drop zero durs, merge adjacent same-level/color
+    // normalize: drop non-positive/non-finite durs, merge adjacent same-level/color
     const norm: Seg[] = [];
     for (const s of segs) {
-      if (s.dur <= 0.001) continue;
+      if (!Number.isFinite(s.dur) || s.dur <= 0.001) continue;
       const last = norm[norm.length - 1];
       if (last && last.level === s.level && last.color === s.color) last.dur += s.dur;
       else norm.push({ ...s });
     }
+    if (!norm.length) {
+      unparsed = true;
+      norm.push({ level: 1, dur: 0.5, color: 0 }, { level: 0, dur: Math.max(0.5, effPeriod - 0.5), color: 0 });
+    }
+    const period = Number.isFinite(effPeriod) && effPeriod > 0 ? effPeriod : 6;
     const secs: Light["sectors"] = [];
     const ss = parseFloat(p("sector_start") ?? "");
     const se = parseFloat(p("sector_end") ?? "");
@@ -350,14 +372,15 @@ export function parseLights(tags: Record<string, string>): Light[] {
     out.push({
       char: rawChar,
       group,
-      period: effPeriod,
-      ...(effPeriod !== tagPeriod ? { tagPeriod } : {}),
+      period,
+      ...(period !== tagPeriod ? { tagPeriod } : {}),
       segs: norm,
       colors: colors.length ? colors : parts?.colors.length ? parts.colors : ["W"],
       sectors: secs,
       rangeNm: parseFloat(p("range") ?? "") || undefined,
       heightM: parseFloat(p("height") ?? "") || undefined,
       unparsed,
+      inferred,
     });
   }
   return out;

@@ -70,6 +70,12 @@ function restyle(map: MLMap) {
   }
 }
 
+// storage can be disabled entirely (private modes, locked-down browsers) —
+// preferences then live in memory and nothing crashes
+const lsGet = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* in-memory only */ } };
+const lsDel = (k: string) => { try { localStorage.removeItem(k); } catch { /* in-memory only */ } };
+
 interface HashView { center: [number, number]; zoom: number; id?: string }
 
 function hashToView(): HashView | null {
@@ -93,6 +99,9 @@ export default function App() {
   const pendingIdRef = useRef<string | null>(null);
   const lastActiveRef = useRef(Date.now());
   const guideTargetRef = useRef<StorePoint | null>(null);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hapticsOn = useRef(true);
+  const activeSeenRef = useRef<Light | null>(null);
 
   const [ready, setReady] = useState(false);
   const [dataError, setDataError] = useState(false);
@@ -104,15 +113,18 @@ export default function App() {
   const [haptics, setHaptics] = useState(true);
   const [about, setAbout] = useState(false);
   const [aboutLeaving, setAboutLeaving] = useState(false);
-  const [guideOn, setGuideOn] = useState(() => !localStorage.getItem("cadencia-guide-done"));
+  const [guideOn, setGuideOn] = useState(() => !lsGet("cadencia-guide-done"));
   const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
   const [crossed, setCrossed] = useState(false);
   const [guideAnchor, setGuideAnchor] = useState<GuideAnchor | null>(null);
   const [guideTargetName, setGuideTargetName] = useState<string | null>(null);
 
+  hapticsOn.current = haptics;
+  // stable identity: map/vessel listeners are bound once at mount and must
+  // read the *current* preference, not the mount-time closure
   const haptic = useCallback((kind: "nudge" | "success" | "buzz") => {
-    if (haptics) hapticsRef.current.trigger(kind);
-  }, [haptics]);
+    if (hapticsOn.current) hapticsRef.current.trigger(kind);
+  }, []);
 
   // ---------- map boot ----------
   useEffect(() => {
@@ -229,6 +241,7 @@ export default function App() {
     }, 5000);
 
     store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true));
+    store.onFail = () => setDataError(true);
     (window as unknown as Record<string, unknown>).__cadencia = store;
     (window as unknown as Record<string, unknown>).__map = map;
     return () => {
@@ -237,6 +250,8 @@ export default function App() {
       if (pollStop) clearTimeout(pollStop);
       clearTimeout(bootWatchdog);
       clearInterval(idleTimer);
+      store.onFail = null;
+      if (leaveTimer.current) clearTimeout(leaveTimer.current);
       hapticsRef.current.destroy();
       map.remove();
       mapRef.current = null;
@@ -365,7 +380,15 @@ export default function App() {
       }
       return { b, color, seen };
     });
-    fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : null);
+    // the map dot replays the sub-light the vessel actually sees — a red 4s
+    // sector flashes red at 4s on the chart, not the primary's white 10s
+    if (seen !== activeSeenRef.current) {
+      activeSeenRef.current = seen;
+      fieldRef.current?.setActiveLight(seen);
+    }
+    fieldRef.current?.setSelectedColor(
+      color ? hexToRgb(colorHex(color)) : [0.16, 0.2, 0.27], // outside sectors: a cold ember
+    );
     const v = vesselRef.current;
     if (v) {
       v.el.setAttribute("aria-valuenow", String(Math.round(b)));
@@ -379,13 +402,20 @@ export default function App() {
   const deselect = useCallback(() => {
     const map = mapRef.current;
     setLeaving(true);
-    setTimeout(() => { setSelected(null); setLeaving(false); }, 300);
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+    leaveTimer.current = setTimeout(() => { leaveTimer.current = null; setSelected(null); setLeaving(false); }, 300);
     setVesselInfo(null);
     setCrossed(false);
+    activeSeenRef.current = null;
     fieldRef.current?.setSelected(null);
     fieldRef.current?.setSelectedColor(null);
+    fieldRef.current?.setActiveLight(null);
     removeVessel();
     updateOverlay();
+    // focus was on the sheet — hand it back to the light picker
+    if (document.querySelector(".sheet")?.contains(document.activeElement)) {
+      setTimeout(() => document.querySelector<HTMLElement>('[data-act="light"]')?.focus(), 320);
+    }
     if (map) {
       const c = map.getCenter(), z = map.getZoom();
       if (matchMedia("(prefers-reduced-motion: reduce)").matches) map.setPadding({ top: 0, left: 0, right: 0, bottom: 0 });
@@ -395,17 +425,21 @@ export default function App() {
   }, [removeVessel, updateOverlay]);
 
   const select = useCallback((map: MLMap, p: StorePoint) => {
+    if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
     setSelected(p);
     setLeaving(false);
     setVesselInfo(null);
     setCrossed(false);
+    activeSeenRef.current = null;
     fieldRef.current?.setSelected(p.id);
     fieldRef.current?.setSelectedColor(null);
+    fieldRef.current?.setActiveLight(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
     const pad = { top: 0, left: 0, right: 0, bottom: sheetRef.current + DOCK_H + 16 };
     const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
     const moving = map.getZoom() !== cam.zoom || Math.abs(map.getCenter().lng - p.lon) > 0.001 || Math.abs(map.getCenter().lat - p.lat) > 0.001;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) {
       map.jumpTo({ ...cam, padding: pad });
     } else {
       map.easeTo({ ...cam, padding: pad, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
@@ -413,8 +447,9 @@ export default function App() {
     history.replaceState(null, "", `#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${Math.max(map.getZoom(), cam.zoom).toFixed(1)}/${p.id}`);
     if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
     if (hasSectors) {
-      // spawn only after the camera settles — unprojecting mid-flight strands it off-screen
-      if (moving) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
+      // spawn only after the camera settles — unprojecting mid-flight strands
+      // it off-screen. jumpTo has already landed, so don't wait for moveend.
+      if (moving && !reduceMotion) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
       else spawnVessel(map, p);
     } else removeVessel();
     setTimeout(updateOverlay, 950);
@@ -610,15 +645,38 @@ export default function App() {
     setTimeout(() => { setAbout(false); setAboutLeaving(false); }, 320);
   }, []);
 
+  // keyboard entry into selection: cycles through the lights nearest to the
+  // view center — the pointer's click is the primary path, this is its peer
+  const cycleLight = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    const c = map.getCenter();
+    const b = map.getBounds();
+    const pts = [...store.points.values()]
+      .filter((p) => !p.uncharted && p.lat >= b.getSouth() && p.lat <= b.getNorth() && p.lon >= b.getWest() && p.lon <= b.getEast())
+      .sort((a, z) => Math.hypot(a.lat - c.lat, a.lon - c.lng) - Math.hypot(z.lat - c.lat, z.lon - c.lng));
+    if (!pts.length) return;
+    const cur = selectedRef.current;
+    const at = cur ? pts.findIndex((p) => p.id === cur.id) : -1;
+    const next = pts[(at + 1) % Math.min(pts.length, 40)]!;
+    select(map, next);
+    setTimeout(() => document.querySelector<HTMLElement>(".sheet .x")?.focus(), 950);
+  }, [ready, select]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (about) closeAbout();
-      else if (selected) deselect();
+      if (e.key === "Escape") {
+        if (about) closeAbout();
+        else if (selected) deselect();
+      } else if ((e.key === "l" || e.key === "L") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        cycleLight();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [about, selected, deselect, closeAbout]);
+  }, [about, selected, deselect, closeAbout, cycleLight]);
 
   // ---------- misc ----------
   const pick = useCallback((map: MLMap, x: number, y: number, radius = 20): StorePoint | null => {
@@ -659,10 +717,10 @@ export default function App() {
         ta.value = url;
         document.body.appendChild(ta);
         ta.select();
-        document.execCommand("copy");
+        const ok = document.execCommand("copy");
         ta.remove();
-        haptic("success");
-        return true;
+        if (ok) haptic("success");
+        return ok;
       } catch {
         return false;
       }
@@ -721,7 +779,8 @@ export default function App() {
           onSound={toggleSound}
           onHaptics={toggleHaptics}
           onAbout={() => setAbout(true)}
-          onGuide={() => { localStorage.removeItem("cadencia-guide-done"); setGuideOn(true); }}
+          onGuide={() => { lsDel("cadencia-guide-done"); setGuideOn(true); }}
+          onLight={cycleLight}
         />
       )}
       {selected && (
@@ -745,14 +804,14 @@ export default function App() {
           crossed={crossed}
           targetName={guideTargetName}
           onFlyToTarget={flyToGuideTarget}
-          onDone={() => { localStorage.setItem("cadencia-guide-done", "1"); setGuideOn(false); }}
+          onDone={() => { lsSet("cadencia-guide-done", "1"); setGuideOn(false); }}
         />
       )}
       {about && <About onClose={closeAbout} leaving={aboutLeaving} />}
       {dataError && ready && (
         <div className="err-tray" role="alert">
           <span>the light list failed to arrive — the sea is still here, but it can't speak</span>
-          <button onClick={() => { setDataError(false); store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true)); }}>retry</button>
+          <button onClick={() => { setDataError(false); store.retry(); store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true)); }}>retry</button>
         </div>
       )}
     </>
