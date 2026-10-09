@@ -1,50 +1,134 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { StorePoint } from "../lib/data.ts";
 
-// Learn-by-doing first run: three short steps on the real UI.
-export default function Guide({ selected, onDone }: { selected: StorePoint | null; onDone: () => void }) {
+export interface GuideAnchor {
+  x: number; // screen px of the thing this step is about (light or vessel)
+  y: number;
+  offscreen: boolean;
+}
+
+// Learn-by-doing first run. Three steps, each waits for the action it teaches.
+// The tip anchors beside its target; a magenta ring marks the target light.
+export default function Guide({
+  anchor,
+  selected,
+  vesselActive,
+  crossed,
+  targetName,
+  onFlyToTarget,
+  onDone,
+}: {
+  anchor: GuideAnchor | null;
+  selected: StorePoint | null;
+  vesselActive: boolean;
+  crossed: boolean;
+  targetName: string | null;
+  onFlyToTarget: () => void;
+  onDone: () => void;
+}) {
   const [step, setStep] = useState(0);
 
+  // step 0 waits for any real interaction with the sea — pan, zoom, or click —
+  // then hands off. A still reader gets a fallback timer instead of a trap.
   useEffect(() => {
-    if (step === 0) {
-      const t = setTimeout(() => setStep(1), 4200);
-      return () => clearTimeout(t);
-    }
+    if (step !== 0) return;
+    const advance = () => setStep(1);
+    window.addEventListener("pointerdown", advance);
+    window.addEventListener("wheel", advance);
+    const t = setTimeout(advance, 7000);
+    return () => {
+      window.removeEventListener("pointerdown", advance);
+      window.removeEventListener("wheel", advance);
+      clearTimeout(t);
+    };
   }, [step]);
 
+  // advance on the action each step teaches
   useEffect(() => {
     if (step === 1 && selected) setStep(2);
-    else if (step === 2 && selected && !selected.lights.some((l) => l.sectors.length)) {
-      const t = setTimeout(onDone, 2600);
+  }, [step, selected]);
+
+  useEffect(() => {
+    if (step !== 2) return;
+    if (crossed) {
+      const t = setTimeout(onDone, 3200);
       return () => clearTimeout(t);
     }
-  }, [step, selected, onDone]);
+    if (!vesselActive) {
+      // picked a light with no sectors — that's a fine ending too
+      const t = setTimeout(onDone, 3800);
+      return () => clearTimeout(t);
+    }
+  }, [step, crossed, vesselActive, onDone]);
 
-  const tips = [
+  const steps = [
     {
-      k: "01 · LISTEN",
-      body: "Every point of light is a real signal, keeping its own time right now — flashes, eclipses, even Morse code.",
-      style: { left: "50%", top: "34%", transform: "translateX(-50%)" } as const,
+      k: "the field",
+      body: "Every point of light on this sea is a real navigational light, replaying its own coded rhythm — the same second you are seeing.",
     },
     {
-      k: "02 · READ",
-      body: "Click any light to decode its signal.",
-      style: { left: "50%", bottom: "30%", transform: "translateX(-50%)" } as const,
+      k: "read a light",
+      body: targetName
+        ? `Click a light to decode its signal. The ring marks ${targetName} — it changes color with your bearing.`
+        : "Click a light to decode its signal.",
+      goto: !selected,
     },
-    {
-      k: "03 · STEER",
-      body: "Some lights show a different color to every bearing. If a vessel appears, drag it around the light.",
-      style: { left: "50%", bottom: "34%", transform: "translateX(-50%)" } as const,
-    },
+    crossed
+      ? {
+          k: "crossed",
+          body: "The color changed — you sailed across a sector boundary. That is how a light tells a ship it has left the safe water.",
+        }
+      : vesselActive
+        ? {
+            k: "steer",
+            body: "Drag the vessel around the light, or drag the rose on the sheet. Watch the color change at each arc.",
+          }
+        : {
+            k: "read",
+            body: "The strip plays the light's true rhythm in sync with the sea. Click open water to keep exploring.",
+          },
   ];
+  const tip = steps[Math.min(step, steps.length - 1)]!;
 
-  const tip = tips[step];
-  if (!tip) return null;
+  // anchor placement: beside the target, never under the sheet — on narrow
+  // screens the tip stacks above/below instead of covering what it points at
+  const pos = useMemo(() => {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const sheetTop = vh - (vw <= 640 ? 120 : 260); // keep clear of the sheet zone
+    if (!anchor || anchor.offscreen) {
+      return { left: "50%", top: Math.min(vh * 0.28, sheetTop - 140), transform: "translateX(-50%)" } as const;
+    }
+    const W = Math.min(264, vw - 24), Hh = 130;
+    // narrow: above the target, or below if there's no headroom
+    if (vw <= 640 || anchor.x + 34 + W > vw - 12 && anchor.x - W - 34 < 12) {
+      const top = anchor.y - Hh - 34 >= 66 ? anchor.y - Hh - 34 : anchor.y + 34;
+      const left = Math.min(Math.max(anchor.x - W / 2, 12), vw - W - 12);
+      return { left, top: Math.min(top, sheetTop - Hh) } as const;
+    }
+    let left = anchor.x + 34;
+    let top = anchor.y - Hh / 2;
+    if (left + W > vw - 12) left = anchor.x - W - 34;
+    top = Math.max(70, Math.min(top, sheetTop - Hh));
+    return { left, top } as const;
+  }, [anchor]);
+
   return (
-    <div className="guide-tip" style={tip.style} role="status">
-      <span className="k">{tip.k}</span>
-      {tip.body}
-      <button className="dismiss" onClick={onDone}>skip the guide</button>
-    </div>
+    <>
+      {anchor && !anchor.offscreen && step === 1 && (
+        <span className="guide-ring" style={{ left: anchor.x, top: anchor.y }} aria-hidden />
+      )}
+      <div className="guide-tip" style={pos} role="status">
+        <span className="k">{tip.k}</span>
+        {tip.body}
+        <div className="row">
+          {"goto" in tip && tip.goto && anchor?.offscreen ? (
+            <button className="goto" onClick={onFlyToTarget}>
+              bring it into view
+            </button>
+          ) : null}
+          <button className="dismiss" onClick={onDone}>skip the guide</button>
+        </div>
+      </div>
+    </>
   );
 }

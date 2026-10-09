@@ -26,10 +26,13 @@ for (const f of cacheFiles) {
     const lat = el.lat ?? el.center?.lat;
     const lon = el.lon ?? el.center?.lon;
     if (lat == null || lon == null) continue;
-    const id = `${el.type}/${el.id}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    elements.push({ id, type: el.type, lat, lon, tags: el.tags ?? {} });
+    // el.id is normally a bare OSM number; some sources carry a "node/123"
+    // prefix — strip it so downstream ids stay "n123", not "nnode/123"
+    const elId = String(el.id).includes("/") ? String(el.id).split("/").pop() : String(el.id);
+    const key = `${el.type}/${elId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    elements.push({ id: elId, type: el.type, lat, lon, tags: el.tags ?? {} });
   }
 }
 if (elements.length) {

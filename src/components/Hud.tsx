@@ -1,18 +1,25 @@
 import { useEffect, useState } from "react";
 import NumberFlow from "@number-flow/react";
 
+// "cadencia" in morse, as printed under the wordmark — decorative, always dim
+const CADENCIA_MORSE = "-.-. .- -.. . -. -.-. .. .-";
+
 export default function Hud({
   inView,
   total,
   sound,
+  haptics,
   onSound,
+  onHaptics,
   onAbout,
   onGuide,
 }: {
   inView: number;
   total: number;
   sound: boolean;
+  haptics: boolean;
   onSound: () => void;
+  onHaptics: () => void;
   onAbout: () => void;
   onGuide: () => void;
 }) {
@@ -30,30 +37,49 @@ export default function Hud({
   }, []);
 
   return (
-    <div className="hud">
+    <>
       <div className="brand">
+        <span className="pip" aria-hidden />
         <h1>cadencia</h1>
-        <span className="tag">EVERY LIGHT, KEEPING TIME</span>
+        <span className="morse" aria-hidden>{CADENCIA_MORSE}</span>
+        <span className="tag">real navigational lights, replaying their charted rhythms</span>
       </div>
-      <div className="tools">
-        <button className={`tool ${sound ? "on" : ""}`} onClick={onSound} aria-label={sound ? "mute" : "unmute"} aria-pressed={sound} title={sound ? "mute" : "unmute"}>
-          {sound ? "◉" : "◌"}
+      <div className="dock">
+        <span className="cell">
+          <span className="live-dot" aria-hidden />
+          <span className="num"><NumberFlow value={inView} format={{ useGrouping: true }} /></span>
+          <span>in view</span>
+        </span>
+        <span className="cell utc">
+          {total > 0 && (
+            <>
+              <span className="num"><NumberFlow value={total} format={{ useGrouping: true }} /></span>
+              <span>charted</span>
+            </>
+          )}
+        </span>
+        <span className="sp" />
+        <span className="cell utc" aria-hidden>{utc}</span>
+        <button
+          className={`cell ${haptics ? "on" : ""}`}
+          onClick={onHaptics}
+          aria-pressed={haptics}
+          title="haptic feedback on sector crossings"
+        >
+          haptics
         </button>
-        <button className="tool" onClick={onGuide} aria-label="replay the guide" title="replay the guide">?</button>
-        <button className="tool" onClick={onAbout} aria-label="about" title="about">i</button>
+        <button
+          className={`cell ${sound ? "on" : ""}`}
+          onClick={onSound}
+          aria-pressed={sound}
+          title={sound ? "mute the sea" : "hear the sea"}
+        >
+          <span className="dot" aria-hidden />
+          sound
+        </button>
+        <button className="cell" onClick={onGuide} title="replay the first-run guide">guide</button>
+        <button className="cell" onClick={onAbout} title="about this chart">about</button>
       </div>
-      <div className="corner bl">
-        <span className="num"><NumberFlow value={inView} format={{ useGrouping: true }} /></span>
-        <span>lights in view</span>
-      </div>
-      <div className="corner br">
-        {total > 0 && (
-          <>
-            <span className="num"><NumberFlow value={total} format={{ useGrouping: true }} /></span>
-            <span> charted · {utc}</span>
-          </>
-        )}
-      </div>
-    </div>
+    </>
   );
 }

@@ -2,27 +2,44 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map as MLMap } from "maplibre-gl";
 import { store, type StorePoint } from "./lib/data.ts";
 import { LightField } from "./lib/lightField.ts";
-import { setSoundEnabled, isSoundOn, pulse } from "./lib/sound.ts";
+import { setSoundEnabled, isSoundOn, pulse, tick } from "./lib/sound.ts";
 import { bearingDeg } from "./lib/geo.ts";
 import { colorHex, notation, type FlashColor, type Light } from "./iala.ts";
 import { WebHaptics } from "web-haptics";
 import LightCard from "./components/LightCard.tsx";
 import Hud from "./components/Hud.tsx";
-import Guide from "./components/Guide.tsx";
+import Guide, { type GuideAnchor } from "./components/Guide.tsx";
 
 const STYLE_URL = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const DOCK_H = 40;
+// layers whose land texture is welcome — everything else goes dark or away
 const KEEP: Record<string, string> = {
   background: "#04070c",
   water: "#04070c",
   water_shadow: "#050b14",
-  landcover: "#0a1420",
-  landuse: "#0a1420",
-  landuse_residential: "#0a1420",
-  park_national_park: "#0a1420",
-  park_nature_reserve: "#0a1420",
+  landcover: "#0c1724",
+  landuse: "#0c1724",
+  landuse_residential: "#0c1724",
+  park_national_park: "#0c1724",
+  park_nature_reserve: "#0c1724",
   waterway: "#0d1a28",
 };
 const LABEL_KEEP = new Set(["watername_ocean", "watername_sea"]);
+
+// verified named lights with real white/red/green sectors — the guide's
+// "obvious first target" and the direct entrance to the signature interaction
+const SECTOR_SPOTS: { name: string; lat: number; lon: number }[] = [
+  { name: "Castle Pile", lat: 50.7777, lon: -1.0942 },
+  { name: "Charles Fort", lat: 51.6957, lon: -8.4996 },
+  { name: "Ballinacourty Point", lat: 52.0781, lon: -7.553 },
+  { name: "Großer Leuchtturm Borkum", lat: 53.5888, lon: 6.6621 },
+  { name: "Holnis", lat: 54.8618, lon: 9.5735 },
+  { name: "Antsirana", lat: -12.2676, lon: 49.2888 },
+  { name: "Shark Island", lat: -26.6355, lon: 15.1526 },
+  { name: "Queenscliff", lat: -38.2716, lon: 144.6619 },
+  { name: "Archer Point", lat: -15.5937, lon: 145.3286 },
+  { name: "Minni Minni", lat: -7.3267, lon: 72.4745 },
+];
 
 function restyle(map: MLMap) {
   const style = map.getStyle();
@@ -34,6 +51,7 @@ function restyle(map: MLMap) {
         if (type === "background") map.setPaintProperty(id, "background-color", KEEP[id]!);
         else if (type === "fill") map.setPaintProperty(id, "fill-color", KEEP[id]!);
         else if (type === "line") map.setPaintProperty(id, "line-color", KEEP[id]!);
+        else map.setLayoutProperty(id, "visibility", "none");
       } else if (LABEL_KEEP.has(id)) {
         map.setPaintProperty(id, "text-color", "#2e4a66");
         map.setPaintProperty(id, "text-opacity", 0.8);
@@ -45,19 +63,22 @@ function restyle(map: MLMap) {
         map.setLayoutProperty(id, "visibility", "none");
       }
     } catch {
-      /* layer variant without the property */
+      // a layer that refuses the color (pattern fills, rasters) must not stay
+      // visible as mottled noise — it goes dark
+      try { map.setLayoutProperty(id, "visibility", "none"); } catch { /* gone */ }
     }
   }
 }
 
-function hashToView(): { center: [number, number]; zoom: number } | null {
-  const m = location.hash.match(/^#(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(\d+(?:\.\d+)?)/);
+interface HashView { center: [number, number]; zoom: number; id?: string }
+
+function hashToView(): HashView | null {
+  const m = location.hash.match(/^#(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(\d+(?:\.\d+)?)(?:\/([nwr]\d+))?/);
   if (!m) return null;
   const lat = parseFloat(m[1]!), lon = parseFloat(m[2]!), zoom = parseFloat(m[3]!);
-  // a shared link must never crash the map — reject impossible views
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(zoom)) return null;
   if (Math.abs(lat) > 85 || Math.abs(lon) > 360 || zoom < 0 || zoom > 22) return null;
-  return { center: [lon, lat], zoom };
+  return { center: [lon, lat], zoom, id: m[4] };
 }
 
 export default function App() {
@@ -68,21 +89,38 @@ export default function App() {
   const hapticsRef = useRef(new WebHaptics());
   const vesselRef = useRef<{ el: HTMLDivElement; lat: number; lon: number } | null>(null);
   const vesselDrag = useRef(false);
+  const sheetRef = useRef(240); // measured height, for camera padding + spawn bounds
+  const pendingIdRef = useRef<string | null>(null);
+  const lastActiveRef = useRef(Date.now());
+  const guideTargetRef = useRef<StorePoint | null>(null);
 
   const [ready, setReady] = useState(false);
   const [dataError, setDataError] = useState(false);
   const [selected, setSelected] = useState<StorePoint | null>(null);
+  const [leaving, setLeaving] = useState(false);
   const [inView, setInView] = useState(0);
   const [total, setTotal] = useState(0);
   const [sound, setSound] = useState(false);
+  const [haptics, setHaptics] = useState(true);
   const [about, setAbout] = useState(false);
+  const [aboutLeaving, setAboutLeaving] = useState(false);
   const [guideOn, setGuideOn] = useState(() => !localStorage.getItem("cadencia-guide-done"));
   const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
+  const [crossed, setCrossed] = useState(false);
+  const [guideAnchor, setGuideAnchor] = useState<GuideAnchor | null>(null);
+  const [guideTargetName, setGuideTargetName] = useState<string | null>(null);
+
+  const haptic = useCallback((kind: "nudge" | "success" | "buzz") => {
+    if (haptics) hapticsRef.current.trigger(kind);
+  }, [haptics]);
 
   // ---------- map boot ----------
-  let pumpCleanup: (() => void) | null = null;
   useEffect(() => {
+    let pumpCleanup: (() => void) | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let pollStop: ReturnType<typeof setTimeout> | null = null;
     const fromHash = hashToView();
+    pendingIdRef.current = fromHash?.id ?? null;
     const start = fromHash ?? { center: [0.8, 47.5] as [number, number], zoom: 3.1 };
     const map = new maplibregl.Map({
       container: wrapRef.current!,
@@ -93,7 +131,7 @@ export default function App() {
       maxZoom: 16,
       attributionControl: { compact: true },
       fadeDuration: 0,
-      renderWorldCopies: false, // one dark sea — lights exist at canonical mercator only
+      renderWorldCopies: false,
     });
     mapRef.current = map;
     map.touchZoomRotate.disableRotation();
@@ -102,9 +140,15 @@ export default function App() {
     const field = new LightField(store);
     fieldRef.current = field;
 
-    // only fatal while booting — a stray tile error mid-session is not the sea going silent
     map.on("error", () => { if (!map.loaded()) setDataError(true); });
     const bootWatchdog = setTimeout(() => { if (!map.loaded()) setDataError(true); }, 20000);
+
+    const markActive = () => { lastActiveRef.current = Date.now(); };
+    map.on("mousedown", markActive);
+    map.on("touchstart", markActive);
+    map.on("wheel", markActive);
+    map.on("dragstart", markActive);
+    map.on("zoomstart", markActive);
 
     map.on("load", () => {
       clearTimeout(bootWatchdog);
@@ -118,13 +162,11 @@ export default function App() {
       };
       sync();
       updateInView(map, setInView);
-      // opening reveal: settle from the dark sea onto the busiest light field
-      if (!fromHash && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        map.easeTo({ center: [0.4, 50.2], zoom: 5.3, duration: 3400, easing: (t) => 1 - Math.pow(1 - t, 4) });
+      const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (!fromHash && !reduceMotion) {
+        map.easeTo({ center: [-0.55, 50.6], zoom: 6.4, duration: 3400, easing: (t) => 1 - Math.pow(1 - t, 4) });
       }
       map.on("idle", () => updateInView(map, setInView));
-      // the sea never holds still: continuous repaint drives the flash clock
-      const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
       let raf = 0, slow: ReturnType<typeof setInterval> | null = null;
       const pump = () => { map.triggerRepaint(); raf = requestAnimationFrame(pump); };
       if (reduceMotion) slow = setInterval(() => map.triggerRepaint(), 1000);
@@ -136,26 +178,65 @@ export default function App() {
         updateInView(map, setInView);
         const c = map.getCenter();
         const z = map.getZoom();
-        history.replaceState(null, "", `#${c.lat.toFixed(3)},${c.lng.toFixed(3)},${z.toFixed(1)}`);
+        const sel = selectedRef.current;
+        history.replaceState(null, "", `#${c.lat.toFixed(3)},${c.lng.toFixed(3)},${z.toFixed(1)}${sel ? `/${sel.id}` : ""}`);
       });
       map.on("click", (e) => {
         const p = pick(map, e.point.x, e.point.y);
-        if (p) select(map, p, e.point.x, e.point.y);
+        if (p) select(map, p);
         else deselect();
       });
       map.on("mousemove", (e) => {
         const p = pick(map, e.point.x, e.point.y, 16);
         map.getCanvas().style.cursor = p ? "pointer" : "";
       });
+
+      // resolve a shared link's light once its shard has arrived
+      pollTimer = setInterval(() => {
+        const want = pendingIdRef.current;
+        if (!want) { clearInterval(pollTimer!); return; }
+        const p = store.points.get(want);
+        if (p) {
+          pendingIdRef.current = null;
+          clearInterval(pollTimer!);
+          select(map, p);
+        }
+      }, 400);
+      pollStop = setTimeout(() => { if (pollTimer) clearInterval(pollTimer); }, 15000);
     });
 
+    // idle drift: an untouched sea slowly settles on the nearest light worth
+    // watching — deniable, interruptible, never under reduced motion
+    const idleTimer = setInterval(() => {
+      if (!map.loaded()) return;
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      if (selectedRef.current) return;
+      if (Date.now() - lastActiveRef.current < 26000) return;
+      lastActiveRef.current = Date.now();
+      const c = map.getCenter();
+      const b = map.getBounds();
+      let best: StorePoint | null = null, bestD = Infinity;
+      for (const p of store.points.values()) {
+        if (p.uncharted || p.lat < b.getSouth() || p.lat > b.getNorth() || p.lon < b.getWest() || p.lon > b.getEast()) continue;
+        const interesting = p.lights.some((l) => l.sectors.length || l.char.startsWith("Mo")) || p.name;
+        if (!interesting) continue;
+        const d = Math.hypot(p.lat - c.lat, p.lon - c.lng);
+        if (d < bestD) { bestD = d; best = p; }
+      }
+      if (best && bestD < 8) {
+        map.easeTo({ center: [best.lon, best.lat], zoom: Math.min(map.getZoom() + 1.2, 8), duration: 6000, easing: (t) => 1 - Math.pow(1 - t, 3) });
+      }
+    }, 5000);
+
     store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true));
-    // debug hook for verification scripts
     (window as unknown as Record<string, unknown>).__cadencia = store;
     (window as unknown as Record<string, unknown>).__map = map;
     return () => {
       pumpCleanup?.();
+      if (pollTimer) clearInterval(pollTimer);
+      if (pollStop) clearTimeout(pollStop);
       clearTimeout(bootWatchdog);
+      clearInterval(idleTimer);
       hapticsRef.current.destroy();
       map.remove();
       mapRef.current = null;
@@ -164,118 +245,14 @@ export default function App() {
   }, []);
 
   // ---------- selection ----------
-  const deselect = useCallback(() => {
-    setSelected(null);
-    setVesselInfo(null);
-    fieldRef.current?.setSelected(null);
-    fieldRef.current?.setSelectedColor(null);
-    removeVessel();
-    updateOverlay();
-  }, []);
+  const selectedRef = useRef<StorePoint | null>(null);
+  selectedRef.current = selected;
+  const vesselInfoRef = useRef<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
+  vesselInfoRef.current = vesselInfo;
 
-  const select = useCallback((map: MLMap, p: StorePoint, _x: number, _y: number) => {
-    setSelected(p);
-    setVesselInfo(null);
-    fieldRef.current?.setSelected(p.id);
-    fieldRef.current?.setSelectedColor(null);
-    const hasSectors = p.lights.some((l) => l.sectors.length);
-    const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
-    const moving = map.getZoom() !== cam.zoom || Math.abs(map.getCenter().lng - p.lon) > 0.001 || Math.abs(map.getCenter().lat - p.lat) > 0.001;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) map.jumpTo(cam);
-    else map.easeTo({ ...cam, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
-    if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
-    if (hasSectors) {
-      // spawn only after the camera settles — unprojecting mid-flight strands it off-screen
-      if (moving) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
-      else spawnVessel(map, p);
-    } else removeVessel();
-    setTimeout(updateOverlay, 950);
-  }, []);
-
-  // ---------- vessel (sector bearing) ----------
-  const spawnVessel = useCallback((map: MLMap, p: StorePoint) => {
-    removeVessel();
-    const el = document.createElement("div");
-    el.className = "vessel";
-    el.setAttribute("role", "slider");
-    el.setAttribute("aria-label", "vessel — drag or use arrow keys to change bearing");
-    el.setAttribute("aria-valuemin", "0");
-    el.setAttribute("aria-valuemax", "360");
-    el.tabIndex = 0;
-    map.getCanvasContainer().appendChild(el);
-    // spawn a fixed screen distance away so the vessel is always reachable
-    const c = map.project([p.lon, p.lat]);
-    const a = (140 * Math.PI) / 180;
-    const ll = map.unproject([c.x + Math.sin(a) * 130, c.y - Math.cos(a) * 130]);
-    vesselRef.current = { el, lat: ll.lat, lon: ll.lng };
-    positionVessel(map);
-    applyVesselBearing(p, ll.lat, ll.lng);
-
-    let pid = -1;
-    el.addEventListener("pointerdown", (e) => {
-      pid = e.pointerId;
-      el.setPointerCapture(pid);
-      vesselDrag.current = true;
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    el.addEventListener("mousedown", (e) => e.stopPropagation());
-    el.addEventListener("touchstart", (e) => e.stopPropagation());
-    // pointer capture routes the release click back to the vessel — don't let it deselect
-    el.addEventListener("click", (e) => e.stopPropagation());
-    // keyboard: arrows walk the vessel around the light on a fixed screen circle
-    el.addEventListener("keydown", (e) => {
-      if (!vesselRef.current) return;
-      const step = e.shiftKey ? 10 : 2;
-      let d = 0;
-      if (e.key === "ArrowRight" || e.key === "ArrowUp") d = step;
-      else if (e.key === "ArrowLeft" || e.key === "ArrowDown") d = -step;
-      else return;
-      e.preventDefault();
-      const c = map.project([p.lon, p.lat]);
-      const v = map.project([vesselRef.current.lon, vesselRef.current.lat]);
-      const ang = Math.atan2(v.y - c.y, v.x - c.x) + (d * Math.PI) / 180;
-      const r = Math.hypot(v.x - c.x, v.y - c.y) || 130;
-      const ll = map.unproject([c.x + Math.cos(ang) * r, c.y + Math.sin(ang) * r]);
-      vesselRef.current.lat = ll.lat;
-      vesselRef.current.lon = ll.lng;
-      positionVessel(map);
-      applyVesselBearing(p, ll.lat, ll.lng);
-    });
-    el.addEventListener("pointermove", (e) => {
-      if (!vesselDrag.current || !vesselRef.current) return;
-      e.stopPropagation();
-      const ll = map.unproject([e.clientX, e.clientY]);
-      vesselRef.current.lat = ll.lat;
-      vesselRef.current.lon = ll.lng;
-      positionVessel(map);
-      applyVesselBearing(p, ll.lat, ll.lng);
-    });
-    const up = () => { vesselDrag.current = false; pid = -1; };
-    el.addEventListener("pointerup", up);
-    el.addEventListener("pointercancel", up);
-  }, []);
-
-  const applyVesselBearing = useCallback((p: StorePoint, lat: number, lon: number) => {
-    const b = bearingDeg(p.lat, p.lon, lat, lon);
-    let color: FlashColor | null = null;
-    let seen: Light | null = null;
-    for (const l of p.lights) {
-      for (const s of l.sectors) {
-        const inArc = s.start <= s.end ? b >= s.start && b <= s.end : b >= s.start || b <= s.end;
-        if (inArc) { color = l.colors[s.color] ?? l.colors[0] ?? "W"; seen = l; }
-      }
-    }
-    setVesselInfo((prev) => {
-      // crossing a sector boundary is a tactile event
-      if (prev && prev.color !== color) hapticsRef.current.trigger("nudge");
-      return { b, color, seen };
-    });
-    // outside the charted sectors the light is dark — dim it, don't lie
-    fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : [0.02, 0.03, 0.05]);
-    vesselRef.current?.el.setAttribute("aria-valuenow", String(Math.round(b)));
-    vesselRef.current?.el.setAttribute("aria-valuetext", `bearing ${Math.round(b)} degrees${color ? `, light shows ${color}` : ", outside charted sectors"}`);
-    updateOverlay();
+  const freeRect = useCallback(() => {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    return { x0: 24, y0: 84, x1: vw - 24, y1: vh - sheetRef.current - DOCK_H - 20 };
   }, []);
 
   const removeVessel = useCallback(() => {
@@ -297,8 +274,9 @@ export default function App() {
     const map = mapRef.current;
     if (!cv || !map) return;
     const dpr = devicePixelRatio || 1;
-    const w = map.getCanvasContainer().clientWidth, h = map.getCanvasContainer().clientHeight;
-    if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    const w = cv.clientWidth || map.getContainer().clientWidth;
+    const h = cv.clientHeight || map.getContainer().clientHeight;
+    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
     const ctx = cv.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
@@ -308,35 +286,245 @@ export default function App() {
     const zoom = map.getZoom();
     const metersPerPx = (156543.03392 * Math.cos((p.lat * Math.PI) / 180)) / Math.pow(2, zoom);
     const pxPerNm = 1852 / metersPerPx;
+    const v = vesselRef.current;
+
+    // magenta chart star at the selected light — the symbol real charts print
+    ctx.save();
+    ctx.strokeStyle = "rgba(224,89,138,0.95)";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      const r1 = 8, r2 = i % 2 === 0 ? 21 : 14;
+      ctx.beginPath();
+      ctx.moveTo(c.x + Math.cos(a) * r1, c.y + Math.sin(a) * r1);
+      ctx.lineTo(c.x + Math.cos(a) * r2, c.y + Math.sin(a) * r2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
     for (const l of p.lights) {
       if (!l.sectors.length) continue;
       const rNm = l.rangeNm ?? 8;
-      const rPx = Math.min(Math.max(rNm * pxPerNm, 30), Math.max(w, h) * 0.45);
+      const rPx = Math.min(Math.max(rNm * pxPerNm, 34), Math.max(w, h) * 0.45);
       for (const s of l.sectors) {
         const col = colorHex(l.colors[s.color] ?? l.colors[0] ?? "W");
-        // canvas angles: 0=east cw; bearing 0=north cw → a = (bearing - 90) * rad
         const a0 = ((s.start - 90) * Math.PI) / 180;
         const a1 = ((s.end - 90) * Math.PI) / 180;
+        const vi = vesselInfoRef.current;
+        const isActive = !!(v && vi && vi.seen === l &&
+          (s.start <= s.end
+            ? vi.b >= s.start && vi.b <= s.end
+            : vi.b >= s.start || vi.b <= s.end));
         ctx.beginPath();
         ctx.moveTo(c.x, c.y);
         ctx.arc(c.x, c.y, rPx, a0, a1);
         ctx.closePath();
-        ctx.fillStyle = col + "14";
+        ctx.fillStyle = col + (isActive ? "2e" : "13");
         ctx.fill();
         ctx.beginPath();
         ctx.arc(c.x, c.y, rPx, a0, a1);
-        ctx.strokeStyle = col + "66";
-        ctx.lineWidth = 1;
-        ctx.setLineDash([3, 5]);
+        ctx.strokeStyle = col + (isActive ? "dd" : "77");
+        ctx.lineWidth = isActive ? 2 : 1.3;
+        ctx.setLineDash(isActive ? [] : [3, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
       }
     }
+    // bearing leader: vessel to light
+    if (v) {
+      const s = map.project([v.lon, v.lat]);
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(s.x, s.y);
+      ctx.strokeStyle = "rgba(224,89,138,0.6)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([3, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     positionVessel(map);
+  }, [positionVessel]);
+
+  const applyVesselBearing = useCallback((p: StorePoint, lat: number, lon: number) => {
+    const b = bearingDeg(p.lat, p.lon, lat, lon);
+    let color: FlashColor | null = null;
+    let seen: Light | null = null;
+    for (const l of p.lights) {
+      for (const s of l.sectors) {
+        const inArc = s.start <= s.end ? b >= s.start && b <= s.end : b >= s.start || b <= s.end;
+        if (inArc) { color = l.colors[s.color] ?? l.colors[0] ?? "W"; seen = l; }
+      }
+    }
+    setVesselInfo((prev) => {
+      if (prev && prev.color !== color && color != null) {
+        haptic("success");
+        setCrossed(true);
+        if (isSoundOn()) tick();
+      } else if (prev && prev.color !== color) {
+        haptic("nudge");
+      }
+      return { b, color, seen };
+    });
+    fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : null);
+    const v = vesselRef.current;
+    if (v) {
+      v.el.setAttribute("aria-valuenow", String(Math.round(b)));
+      v.el.setAttribute("aria-valuetext", `bearing ${Math.round(b)} degrees${color ? `, light shows ${color}` : ", outside charted sectors"}`);
+      const ship = v.el.querySelector(".ship") as HTMLElement | null;
+      if (ship) ship.style.transform = `rotate(${(b + 180) % 360}deg)`;
+    }
+    updateOverlay();
+  }, [haptic, updateOverlay]);
+
+  const deselect = useCallback(() => {
+    const map = mapRef.current;
+    setLeaving(true);
+    setTimeout(() => { setSelected(null); setLeaving(false); }, 300);
+    setVesselInfo(null);
+    setCrossed(false);
+    fieldRef.current?.setSelected(null);
+    fieldRef.current?.setSelectedColor(null);
+    removeVessel();
+    updateOverlay();
+    if (map) {
+      const c = map.getCenter(), z = map.getZoom();
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) map.setPadding({ top: 0, left: 0, right: 0, bottom: 0 });
+      else map.easeTo({ padding: { top: 0, left: 0, right: 0, bottom: 0 }, duration: 400 });
+      history.replaceState(null, "", `#${c.lat.toFixed(3)},${c.lng.toFixed(3)},${z.toFixed(1)}`);
+    }
+  }, [removeVessel, updateOverlay]);
+
+  const select = useCallback((map: MLMap, p: StorePoint) => {
+    setSelected(p);
+    setLeaving(false);
+    setVesselInfo(null);
+    setCrossed(false);
+    fieldRef.current?.setSelected(p.id);
+    fieldRef.current?.setSelectedColor(null);
+    const hasSectors = p.lights.some((l) => l.sectors.length);
+    const pad = { top: 0, left: 0, right: 0, bottom: sheetRef.current + DOCK_H + 16 };
+    const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
+    const moving = map.getZoom() !== cam.zoom || Math.abs(map.getCenter().lng - p.lon) > 0.001 || Math.abs(map.getCenter().lat - p.lat) > 0.001;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      map.jumpTo({ ...cam, padding: pad });
+    } else {
+      map.easeTo({ ...cam, padding: pad, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
+    }
+    history.replaceState(null, "", `#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${Math.max(map.getZoom(), cam.zoom).toFixed(1)}/${p.id}`);
+    if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
+    if (hasSectors) {
+      // spawn only after the camera settles — unprojecting mid-flight strands it off-screen
+      if (moving) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
+      else spawnVessel(map, p);
+    } else removeVessel();
+    setTimeout(updateOverlay, 950);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [removeVessel, updateOverlay]);
+
+  // bearing light → vessel, measured in screen space so rose dragging agrees
+  const currentScreenBearing = useCallback((map: MLMap, p: StorePoint): number => {
+    const v = vesselRef.current;
+    if (!v) return 0;
+    const c = map.project([p.lon, p.lat]);
+    const s = map.project([v.lon, v.lat]);
+    return ((Math.atan2(s.x - c.x, c.y - s.y) * 180) / Math.PI + 360) % 360;
   }, []);
 
-  const selectedRef = useRef<StorePoint | null>(null);
-  selectedRef.current = selected;
+  const steerVesselTo = useCallback((map: MLMap, p: StorePoint, deg: number) => {
+    const v = vesselRef.current;
+    if (!v) return;
+    const c = map.project([p.lon, p.lat]);
+    const s = map.project([v.lon, v.lat]);
+    const r = Math.hypot(s.x - c.x, s.y - c.y) || 130;
+    const a = (deg * Math.PI) / 180;
+    const ll = map.unproject([c.x + Math.sin(a) * r, c.y - Math.cos(a) * r]);
+    v.lat = ll.lat; v.lon = ll.lng;
+    positionVessel(map);
+    applyVesselBearing(p, ll.lat, ll.lng);
+  }, [applyVesselBearing, positionVessel]);
+
+  const onSteer = useCallback((deg: number) => {
+    const map = mapRef.current, p = selectedRef.current;
+    if (map && p) steerVesselTo(map, p, deg);
+  }, [steerVesselTo]);
+
+  // ---------- vessel (sector bearing) ----------
+  const spawnVessel = useCallback((map: MLMap, p: StorePoint) => {
+    removeVessel();
+    const el = document.createElement("div");
+    el.className = "vessel";
+    el.setAttribute("role", "slider");
+    el.setAttribute("aria-label", "vessel — drag or use arrow keys to change bearing");
+    el.setAttribute("aria-valuemin", "0");
+    el.setAttribute("aria-valuemax", "360");
+    el.tabIndex = 0;
+    // a directional silhouette that points back at its light
+    el.innerHTML = `<span class="halo"></span><svg class="ship" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3 L18 19 L12 15.5 L6 19 Z" fill="#f3ead6" stroke="#0a1420" stroke-width="0.8"/>
+    </svg>`;
+    map.getCanvasContainer().appendChild(el);
+
+    // spawn on open screen — walk candidate bearings until the projected spot
+    // clears the sheet, the dock, and the wordmark zone
+    const c = map.project([p.lon, p.lat]);
+    const fr = freeRect();
+    const R = window.innerWidth <= 640 ? 105 : 135;
+    const widest = widestSectorMid(p);
+    const candidates = [widest, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
+    let pos: { x: number; y: number } | null = null;
+    for (const deg of candidates) {
+      const a = (deg * Math.PI) / 180;
+      const x = c.x + Math.sin(a) * R, y = c.y - Math.cos(a) * R;
+      if (x > fr.x0 && x < fr.x1 && y > fr.y0 && y < fr.y1) { pos = { x, y }; break; }
+    }
+    if (!pos) {
+      const a = (widest * Math.PI) / 180;
+      pos = {
+        x: Math.min(Math.max(c.x + Math.sin(a) * R, fr.x0), fr.x1),
+        y: Math.min(Math.max(c.y - Math.cos(a) * R, fr.y0), fr.y1),
+      };
+    }
+    const ll = map.unproject([pos.x, pos.y]);
+    vesselRef.current = { el, lat: ll.lat, lon: ll.lng };
+    positionVessel(map);
+    applyVesselBearing(p, ll.lat, ll.lng);
+
+    let pid = -1;
+    el.addEventListener("pointerdown", (e) => {
+      pid = e.pointerId;
+      el.setPointerCapture(pid);
+      vesselDrag.current = true;
+      el.classList.add("grabbed");
+      haptic("nudge");
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("touchstart", (e) => e.stopPropagation());
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("keydown", (e) => {
+      if (!vesselRef.current) return;
+      const step = e.shiftKey ? 10 : 2;
+      let d = 0;
+      if (e.key === "ArrowRight" || e.key === "ArrowUp") d = step;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowDown") d = -step;
+      else return;
+      e.preventDefault();
+      steerVesselTo(map, p, currentScreenBearing(map, p) + d);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!vesselDrag.current || !vesselRef.current) return;
+      e.stopPropagation();
+      const ll = map.unproject([e.clientX, e.clientY]);
+      vesselRef.current.lat = ll.lat;
+      vesselRef.current.lon = ll.lng;
+      positionVessel(map);
+      applyVesselBearing(p, ll.lat, ll.lng);
+    });
+    const up = () => { vesselDrag.current = false; pid = -1; el.classList.remove("grabbed"); };
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }, [applyVesselBearing, freeRect, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -349,15 +537,88 @@ export default function App() {
 
   useEffect(() => { updateOverlay(); }, [selected, updateOverlay]);
 
+  // ---------- measure the sheet so the camera and vessel stay clear of it ----------
+  useEffect(() => {
+    const measure = () => {
+      const el = document.querySelector(".sheet");
+      if (el) sheetRef.current = el.getBoundingClientRect().height;
+    };
+    measure();
+    const t = setInterval(measure, 800);
+    return () => clearInterval(t);
+  }, [selected]);
+
+  // ---------- guide anchor: project the target light (or the vessel) ----------
+  useEffect(() => {
+    if (!guideOn) { setGuideAnchor(null); return; }
+    const map = mapRef.current;
+    if (!map || !ready) return;
+
+    const tick = () => {
+      // (re)resolve the curated target — its shard may arrive late
+      if (!guideTargetRef.current) {
+        const c = map.getCenter();
+        let spot = SECTOR_SPOTS[0]!, spotD = Infinity;
+        for (const s of SECTOR_SPOTS) {
+          const d = Math.hypot(s.lat - c.lat, s.lon - c.lng);
+          if (d < spotD) { spotD = d; spot = s; }
+        }
+        let target: StorePoint | null = null;
+        let bestD = 0.02;
+        for (const p of store.points.values()) {
+          const d = Math.hypot(p.lat - spot.lat, p.lon - spot.lon);
+          if (d < bestD) { bestD = d; target = p; }
+        }
+        if (target) {
+          guideTargetRef.current = target;
+          setGuideTargetName(target.name ?? spot.name);
+        }
+      }
+      const v = vesselRef.current;
+      const t = guideTargetRef.current;
+      let pt: { x: number; y: number } | null = null;
+      if (v) pt = map.project([v.lon, v.lat]);
+      else if (t) pt = map.project([t.lon, t.lat]);
+      if (!pt) { setGuideAnchor(null); return; }
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const next = {
+        x: Math.round(pt.x),
+        y: Math.round(pt.y),
+        offscreen: pt.x < -40 || pt.x > vw + 40 || pt.y < -40 || pt.y > vh - DOCK_H + 20,
+      };
+      setGuideAnchor((prev) =>
+        prev && prev.x === next.x && prev.y === next.y && prev.offscreen === next.offscreen ? prev : next
+      );
+    };
+    tick();
+    const t = setInterval(tick, 350);
+    return () => clearInterval(t);
+  }, [guideOn, ready]);
+
+  const flyToGuideTarget = useCallback(() => {
+    const map = mapRef.current;
+    const t = guideTargetRef.current;
+    if (!map || !t) return;
+    const b = map.getBounds();
+    store.needBounds(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
+    store.needBounds(t.lon - 1, t.lat - 1, t.lon + 1, t.lat + 1);
+    map.easeTo({ center: [t.lon, t.lat], zoom: Math.max(map.getZoom(), 8.5), duration: 2400, easing: (x) => 1 - Math.pow(1 - x, 3) });
+  }, []);
+
+  const closeAbout = useCallback(() => {
+    setAboutLeaving(true);
+    setTimeout(() => { setAbout(false); setAboutLeaving(false); }, 320);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (about) setAbout(false);
+      if (about) closeAbout();
       else if (selected) deselect();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [about, selected, deselect]);
+  }, [about, selected, deselect, closeAbout]);
 
   // ---------- misc ----------
   const pick = useCallback((map: MLMap, x: number, y: number, radius = 20): StorePoint | null => {
@@ -378,10 +639,48 @@ export default function App() {
     setSound((s) => { setSoundEnabled(!s); return !s; });
   }, []);
 
-  const shareSelected = useCallback(() => {
-    if (!selected) return;
-    import("./lib/share.ts").then((m) => m.shareCard(selected));
-  }, [selected]);
+  const toggleHaptics = useCallback(() => {
+    setHaptics((h) => !h);
+  }, []);
+
+  const copyLink = useCallback(async (): Promise<boolean> => {
+    const p = selectedRef.current;
+    const map = mapRef.current;
+    if (!p || !map) return false;
+    const z = map.getZoom();
+    const url = `${location.origin}/#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${z.toFixed(1)}/${p.id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      haptic("success");
+      return true;
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = url;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        haptic("success");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }, [haptic]);
+
+  const saveCard = useCallback(async (): Promise<boolean> => {
+    const p = selectedRef.current;
+    if (!p) return false;
+    try {
+      const m = await import("./lib/share.ts");
+      const ok = await m.shareCard(p);
+      if (ok) haptic("success");
+      return ok;
+    } catch {
+      return false;
+    }
+  }, [haptic]);
 
   const vesselNote = useMemo(() => {
     if (!vesselInfo || !selected) return null;
@@ -392,49 +691,65 @@ export default function App() {
     return `bearing ${Math.round(b)}° — from here the light shows ${word}${which}`;
   }, [vesselInfo, selected]);
 
+  const activeLight = vesselInfo?.seen ?? selected?.light;
+
   return (
     <>
       <div ref={wrapRef} className="map-wrap" />
       <canvas ref={overlayRef} className="map-wrap" style={{ pointerEvents: "none", zIndex: 8 }} />
-      {!ready && (
-        <div className="loading" role="status">
-          {dataError ? (
-            <>
-              <div className="word">THE SEA DIDN'T ANSWER</div>
-              <button className="act" onClick={() => location.reload()}>try again</button>
-            </>
-          ) : (
-            <>
-              <div className="pulse" />
-              <div className="word">LISTENING TO THE SEA</div>
-            </>
-          )}
-        </div>
+      <div className={`loading${ready ? " gone" : ""}`} role="status" aria-hidden={ready}>
+        {dataError && !ready ? (
+          <div className="inner">
+            <div className="word">THE SEA DIDN'T ANSWER</div>
+            <div className="sub">the chart failed to load</div>
+            <button className="act" onClick={() => location.reload()}>try again</button>
+          </div>
+        ) : (
+          <div className="inner">
+            <div className="pulse" />
+            <div className="word">LISTENING TO THE SEA</div>
+            <div className="sub">real navigational lights, replaying their charted rhythms</div>
+          </div>
+        )}
+      </div>
+      {ready && (
+        <Hud
+          inView={inView}
+          total={total}
+          sound={sound}
+          haptics={haptics}
+          onSound={toggleSound}
+          onHaptics={toggleHaptics}
+          onAbout={() => setAbout(true)}
+          onGuide={() => { localStorage.removeItem("cadencia-guide-done"); setGuideOn(true); }}
+        />
       )}
-      <Hud
-        inView={inView}
-        total={total}
-        sound={sound}
-        onSound={toggleSound}
-        onAbout={() => setAbout(true)}
-        onGuide={() => { localStorage.removeItem("cadencia-guide-done"); setGuideOn(true); }}
-      />
       {selected && (
         <LightCard
           point={selected}
           vesselNote={vesselNote}
+          vesselBearing={vesselInfo?.b ?? null}
+          activeLight={activeLight!}
+          leaving={leaving}
+          onSteer={onSteer}
           onClose={deselect}
-          onShare={shareSelected}
+          onCopyLink={copyLink}
+          onSaveCard={saveCard}
         />
       )}
       {guideOn && ready && (
         <Guide
+          anchor={guideAnchor}
           selected={selected}
+          vesselActive={!!vesselRef.current}
+          crossed={crossed}
+          targetName={guideTargetName}
+          onFlyToTarget={flyToGuideTarget}
           onDone={() => { localStorage.setItem("cadencia-guide-done", "1"); setGuideOn(false); }}
         />
       )}
-      {about && <About onClose={() => setAbout(false)} />}
-      {dataError && (
+      {about && <About onClose={closeAbout} leaving={aboutLeaving} />}
+      {dataError && ready && (
         <div className="err-tray" role="alert">
           <span>the light list failed to arrive — the sea is still here, but it can't speak</span>
           <button onClick={() => { setDataError(false); store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true)); }}>retry</button>
@@ -453,21 +768,33 @@ function updateInView(map: MLMap, set: (n: number) => void) {
   set(n);
 }
 
+function widestSectorMid(p: StorePoint): number {
+  let best = 140, span = -1;
+  for (const l of p.lights) {
+    for (const s of l.sectors) {
+      let w = s.end - s.start;
+      if (w <= 0) w += 360;
+      if (w > span) { span = w; best = (s.start + w / 2) % 360; }
+    }
+  }
+  return best;
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const n = parseInt(hex.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-function About({ onClose }: { onClose: () => void }) {
+function About({ onClose, leaving }: { onClose: () => void; leaving: boolean }) {
   return (
-    <div className="tray" role="dialog" aria-label="about cadencia">
+    <div className={`tray${leaving ? " exit" : ""}`} role="dialog" aria-label="about cadencia">
       <button className="x" onClick={onClose} aria-label="close">✕</button>
       <div className="cols">
         <div>
-          <h3>cadencia</h3>
+          <h3>The list</h3>
           <p>
             Every point of light on this chart is a real navigational light, blinking the
-            exact signal mariners read at night. <b>Fl(3) 15s</b> means three flashes every
+            signal mariners read at night. <b>Fl(3) 15s</b> means three flashes every
             fifteen seconds. <b>Oc(2)WRG</b> means two eclipses, and its color changes with
             the direction you look at it from — a language older than radio, still running.
           </p>
@@ -479,15 +806,22 @@ function About({ onClose }: { onClose: () => void }) {
           </p>
         </div>
         <div>
-          <h3>&nbsp;</h3>
+          <h3>Sectors</h3>
           <p>
             White, red, and green sectors are real: drag the vessel around a sectored light
-            and watch it change color — that's how sailors know they're off the safe channel.
-            The dimmer daylight dots are honest too: a light competes with the sun.
+            and watch it change color — that's how sailors know they've left the safe channel.
+            The rose on the sheet is the same instrument: drag its needle, or steer the
+            vessel with arrow keys.
+          </p>
+          <h3>The clock</h3>
+          <p>
+            Where OpenStreetMap carries an explicit <code>sequence</code>, cadencia replays
+            it exactly. Where it carries only a character like <b>Fl(3)</b>, the rhythm is
+            reconstructed to that code's rules — a few lights mark themselves as inferred.
+            Phases share the same UTC second, so the sea you see is the sea anyone sees.
           </p>
           <p>
-            Data © OpenStreetMap contributors (ODbL). Basemap © CARTO, OSM.
-            Built by <a href="https://github.com/miguelgarglez" style={{ color: "inherit" }}>@miguelgarglez</a> — <a href="https://github.com/miguelgarglez/cadencia" style={{ color: "inherit" }}>source on GitHub</a>.
+            Data © OpenStreetMap contributors (ODbL). Chart © CARTO, OSM.
           </p>
         </div>
       </div>
