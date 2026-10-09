@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { StorePoint } from "../lib/data.ts";
 import { colorHex, notation, type Light } from "../iala.ts";
 import { todSeconds } from "../lib/geo.ts";
+import { WebHaptics } from "web-haptics";
 
 // The decode sheet: a light-list entry — name, notation, live timing strip,
 // bearing rose for sectored lights, share actions.
@@ -16,6 +17,7 @@ export default function LightCard({
   onCopyLink,
   onSaveCard,
   onHeightChange,
+  onSettle,
 }: {
   point: StorePoint;
   vesselNote: string | null;
@@ -25,8 +27,9 @@ export default function LightCard({
   onSteer: (bearingDeg: number) => void;
   onClose: () => void;
   onCopyLink: () => Promise<boolean>;
-  onSaveCard: () => Promise<boolean>;
+  onSaveCard: () => Promise<{ ok: boolean; url?: string }>;
   onHeightChange?: (h: number) => void;
+  onSettle?: () => void;
 }) {
   const l = activeLight;
   const stripRef = useRef<HTMLDivElement>(null);
@@ -34,6 +37,7 @@ export default function LightCard({
   const [peek, setPeek] = useState(() => window.innerWidth <= 640);
   const [linkState, setLinkState] = useState<"idle" | "busy" | "done" | "fail">("idle");
   const [cardState, setCardState] = useState<"idle" | "busy" | "done" | "fail">("idle");
+  const [cardPeek, setCardPeek] = useState<string | null>(null);
 
   useEffect(() => {
     const el = stripRef.current;
@@ -69,23 +73,44 @@ export default function LightCard({
     return () => ro.disconnect();
   }, [onHeightChange]);
 
-  // the grip is a real drag handle: pull down to peek, up to expand, tap toggles
-  const gripDrag = useRef<{ y: number; moved: boolean } | null>(null);
+  // the grip is the sheet's handle: the sheet tracks the finger continuously,
+  // then settles to the nearest detent on distance AND velocity
+  const gripDrag = useRef<{ pid: number; y0: number; t0: number; lastY: number; lastT: number; moved: boolean } | null>(null);
+  const hapticsRef = useRef<WebHaptics | null>(null);
   const onGripDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
-    gripDrag.current = { y: e.clientY, moved: false };
+    if (gripDrag.current) return; // one pointer owns the sheet
+    gripDrag.current = { pid: e.pointerId, y0: e.clientY, t0: e.timeStamp, lastY: e.clientY, lastT: e.timeStamp, moved: false };
     e.currentTarget.setPointerCapture(e.pointerId);
+    cardRef.current?.classList.add("dragging"); // follow the finger, no easing
   }, []);
   const onGripMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
     const g = gripDrag.current;
-    if (g && Math.abs(e.clientY - g.y) > 6) g.moved = true;
-  }, []);
+    if (!g || e.pointerId !== g.pid) return;
+    const el = cardRef.current;
+    if (!el) return;
+    const dy = e.clientY - g.y0;
+    if (Math.abs(dy) > 4) g.moved = true;
+    if (!g.moved) return;
+    // follow the finger: peek can only stretch up, expanded only down
+    const travel = peek ? Math.min(dy, 0) : Math.max(dy, 0);
+    el.style.transform = `translateY(${travel}px)`;
+    g.lastY = e.clientY;
+    g.lastT = e.timeStamp;
+  }, [peek]);
   const onGripUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
     const g = gripDrag.current;
+    if (!g || e.pointerId !== g.pid) return;
     gripDrag.current = null;
-    if (!g) return;
-    if (g.moved) setPeek(e.clientY - g.y > 0);
-    else setPeek((p) => !p);
-  }, []);
+    const el = cardRef.current;
+    if (el) { el.style.transform = ""; el.classList.remove("dragging"); }
+    if (!g.moved) { setPeek((p) => !p); hapticsRef.current ??= new WebHaptics(); hapticsRef.current.trigger("nudge"); onSettle?.(); return; }
+    const dy = e.clientY - g.y0;
+    const v = (e.clientY - g.lastY) / Math.max(e.timeStamp - g.lastT, 1); // px/ms
+    const flick = Math.abs(v) > 0.35;
+    const next = peek ? !(dy < -60 || (flick && v < 0)) : dy > 60 || (flick && v > 0);
+    if (next !== peek) { setPeek(next); hapticsRef.current ??= new WebHaptics(); hapticsRef.current.trigger("nudge"); }
+    onSettle?.();
+  }, [peek, onSettle]);
 
   const flash = (set: typeof setLinkState) => (ok: Promise<boolean>) => {
     set("busy");
@@ -126,21 +151,36 @@ export default function LightCard({
           onPointerDown={onGripDown}
           onPointerMove={onGripMove}
           onPointerUp={onGripUp}
-          onPointerCancel={() => { gripDrag.current = null; }}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPeek((p) => !p); } }}
+          onPointerCancel={() => {
+            gripDrag.current = null;
+            const el = cardRef.current;
+            if (el) { el.style.transform = ""; el.classList.remove("dragging"); }
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPeek((p) => !p); onSettle?.(); } }}
         >
           <span className="grip" aria-hidden />
         </div>
-        <div className="lead">
-          <h2>{name}</h2>
-          {point.ref && <span className="ref">{point.ref}</span>}
+        <div className="head">
+          <div className="lead">
+            <h2>{name}</h2>
+            {point.ref && <span className="ref">{point.ref}</span>}
+          </div>
+          <div className="sub">
+            {`${point.lat.toFixed(3)}° ${point.lat >= 0 ? "N" : "S"}, ${Math.abs(point.lon).toFixed(3)}° ${point.lon >= 0 ? "E" : "W"}`}
+            {sectored ? " · sectored" : ""}
+          </div>
+          <div className="notation">{notation(l)}</div>
         </div>
-        <div className="sub">
-          {`${point.lat.toFixed(3)}° ${point.lat >= 0 ? "N" : "S"}, ${Math.abs(point.lon).toFixed(3)}° ${point.lon >= 0 ? "E" : "W"}`}
-          {sectored ? " · sectored" : ""}
-        </div>
-        <div className="notation">{notation(l)}</div>
         <div className="strip" ref={stripRef}>
+          {(l.unparsed || l.inferred || (l.tagPeriod != null && l.segs.length > 0)) && (
+            <div className="verdict">
+              {l.unparsed
+                ? "unusual signal — shown as a single flash"
+                : l.inferred
+                  ? `approx — the chart tags don't fully decode${l.tagPeriod != null ? `; the full cycle runs ${l.period}s` : ""}`
+                  : `the full cycle repeats every ${l.period}s`}
+            </div>
+          )}
           <svg viewBox={`0 0 ${w} ${H}`} aria-hidden>
             <line x1={0} x2={W} y1={y} y2={y} stroke="#16283a" strokeWidth={1} />
             {l.period > 0 && [...Array(Math.floor(l.period)).keys()].map((s) => (
@@ -180,32 +220,47 @@ export default function LightCard({
             )}
           </svg>
         </div>
-        <div className="meta peekable">
-          {l.rangeNm != null && <span>range <b>{l.rangeNm} nmi</b></span>}
-          {l.heightM != null && <span>height <b>{l.heightM} m</b></span>}
-          {l.group.length > 1 && <span>group <b>{l.group.join("+")}</b></span>}
-          {l.unparsed && <span>unusual signal — shown as a single flash</span>}
-          {!l.unparsed && l.inferred && <span>approx — period reconstructed</span>}
-          {l.tagPeriod != null && <span>alternates over <b>{l.period}s</b></span>}
-        </div>
-        {vesselNote && <div className="note peekable">{vesselNote}.</div>}
-        {fixed && <div className="note peekable">a fixed light — it never blinks, it simply burns.</div>}
-        <div className="actions peekable">
-          <button
-            className={`act ${linkState}`}
-            onClick={() => flash(setLinkState)(onCopyLink())}
-          >
-            {linkState === "done" ? "link copied" : linkState === "fail" ? "couldn't copy" : linkState === "busy" ? "copying…" : "copy link"}
-          </button>
-          <button
-            className={`act ${cardState}`}
-            onClick={() => flash(setCardState)(onSaveCard())}
-          >
-            {cardState === "done" ? "card saved" : cardState === "fail" ? "card failed" : cardState === "busy" ? "drawing…" : "save card"}
-          </button>
+        <div className="rest">
+          <div className="meta peekable">
+            {l.rangeNm != null && <span>range <b>{l.rangeNm} nmi</b></span>}
+            {l.heightM != null && <span>height <b>{l.heightM} m</b></span>}
+            {l.group.length > 1 && <span>group <b>{l.group.join("+")}</b></span>}
+          </div>
+          {vesselNote && <div className="note peekable">{vesselNote}.</div>}
+          {fixed && <div className="note peekable">a fixed light — it never blinks, it simply burns.</div>}
+          <div className="actions peekable">
+            <button
+              className={`act ${linkState}`}
+              onClick={() => flash(setLinkState)(onCopyLink())}
+            >
+              {linkState === "done" ? "link copied" : linkState === "fail" ? "couldn't copy" : linkState === "busy" ? "copying…" : "copy link"}
+            </button>
+            <button
+              className={`act ${cardState}`}
+              onClick={() => {
+                setCardState("busy");
+                onSaveCard().then(({ ok, url }) => {
+                  setCardState(ok ? "done" : "fail");
+                  if (ok && url) {
+                    setCardPeek(url);
+                    setTimeout(() => setCardPeek(null), 5000);
+                  }
+                  setTimeout(() => setCardState("idle"), 2400);
+                });
+              }}
+            >
+              {cardState === "done" ? "card saved" : cardState === "fail" ? "card failed" : cardState === "busy" ? "drawing…" : "record this bearing"}
+            </button>
+          </div>
         </div>
       </div>
       {sectored && <Rose point={point} bearing={vesselBearing} onSteer={onSteer} />}
+      {cardPeek && (
+        <div className="cardpeek" role="status">
+          <img src={cardPeek} alt="the exported chart card" />
+          <span>card downloaded — check your downloads folder</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -222,15 +277,15 @@ function Rose({
   onSteer: (deg: number) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const drag = useRef<{ pid: number; off: number } | null>(null);
   const R = 38, C = 50;
 
-  const steerFromEvent = useCallback((e: React.PointerEvent) => {
+  const angleOf = useCallback((e: React.PointerEvent) => {
     const r = svgRef.current!.getBoundingClientRect();
     const dx = e.clientX - (r.left + r.width / 2);
     const dy = e.clientY - (r.top + r.height / 2);
-    const deg = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-    onSteer(deg);
-  }, [onSteer]);
+    return ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+  }, []);
 
   const arcs: { d: string; col: string }[] = [];
   for (const l of point.lights) {
@@ -270,8 +325,21 @@ function Rose({
           e.preventDefault();
           onSteer(((bearing ?? 0) + d + 360) % 360);
         }}
-        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); steerFromEvent(e); }}
-        onPointerMove={(e) => { if (e.buttons & 1) steerFromEvent(e); }}
+        onPointerDown={(e) => {
+          if (drag.current) return; // one pointer steers
+          e.currentTarget.setPointerCapture(e.pointerId);
+          // grab offset: the needle keeps its angle under the finger
+          const off = bearing == null ? 0 : angleOf(e) - bearing;
+          drag.current = { pid: e.pointerId, off };
+          if (bearing == null) onSteer(angleOf(e));
+        }}
+        onPointerMove={(e) => {
+          const d = drag.current;
+          if (!d || e.pointerId !== d.pid) return;
+          onSteer(((angleOf(e) - d.off) % 360 + 360) % 360);
+        }}
+        onPointerUp={(e) => { if (drag.current?.pid === e.pointerId) drag.current = null; }}
+        onPointerCancel={() => { drag.current = null; }}
       >
         <circle cx={C} cy={C} r={R + 6} fill="none" stroke="#16283a" strokeWidth={1} />
         {[0, 90, 180, 270].map((d) => {
@@ -305,7 +373,7 @@ function Rose({
         )}
         <circle cx={C} cy={C} r={3} fill="#e0598a" />
       </svg>
-      <div className="cap">{bearing == null ? "bearing" : <><b>{Math.round(bearing)}°</b> true</>}</div>
+      <div className="cap">{bearing == null ? "drag to steer" : <><b>{Math.round(bearing)}°</b> true</>}</div>
     </div>
   );
 }

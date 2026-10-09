@@ -4,8 +4,9 @@ import type { Light } from "../iala.ts";
 import { colorHex, notation } from "../iala.ts";
 
 // `active` is the sub-light the vessel actually sees — the card records the
-// signal from that bearing, not just the primary light
-export function shareCard(p: StorePoint, active?: Light | null, bearing?: number | null): Promise<boolean> {
+// signal from that bearing, not just the primary light. Returns the blob URL
+// so the caller can preview the exact card that was exported.
+export function shareCard(p: StorePoint, active?: Light | null, bearing?: number | null): Promise<{ ok: boolean; url?: string }> {
   const l = active ?? p.light;
   const W = 1200, H = 630;
   const cv = document.createElement("canvas");
@@ -161,13 +162,15 @@ export function shareCard(p: StorePoint, active?: Light | null, bearing?: number
 
   return new Promise((resolve) => {
     cv.toBlob((blob) => {
-      if (!blob) { resolve(false); return; }
+      if (!blob) { resolve({ ok: false }); return; }
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      a.href = url;
       a.download = `cadencia-${(p.name ?? "light").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      resolve(true);
+      // the preview keeps this URL alive for a few seconds; revoke late
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      resolve({ ok: true, url });
     }, "image/png");
   });
 }

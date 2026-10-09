@@ -15,6 +15,7 @@ export default function Guide({
   vesselActive,
   crossed,
   targetName,
+  clearanceBottom = 0,
   onFlyToTarget,
   onTargetClick,
   onDone,
@@ -24,6 +25,7 @@ export default function Guide({
   vesselActive: boolean;
   crossed: boolean;
   targetName: string | null;
+  clearanceBottom?: number;
   onFlyToTarget: () => void;
   onTargetClick: () => void;
   onDone: () => void;
@@ -43,9 +45,10 @@ export default function Guide({
     };
   }, [step]);
 
-  // advance on the action each step teaches
+  // advance on the action each step teaches — a selection from step 0 or 1
+  // (including the "read the target" CTA) lands on the read/steer step
   useEffect(() => {
-    if (step === 1 && selected) setStep(2);
+    if (step <= 1 && selected) setStep(2);
   }, [step, selected]);
 
   useEffect(() => {
@@ -64,7 +67,7 @@ export default function Guide({
   const steps = [
     {
       k: "the field",
-      body: "Every point of light on this sea is a real navigational light, replaying its own coded rhythm — the same second you are seeing.",
+      body: "Every light on this sea is real — each replays its charted rhythm off one shared clock.",
     },
     {
       k: "read a light",
@@ -95,10 +98,14 @@ export default function Guide({
   const pos = useMemo(() => {
     const vw = window.innerWidth, vh = window.innerHeight;
     const sheetTop = vh - (vw <= 640 ? 120 : 260); // keep clear of the sheet zone
-    // narrow screens: the tip pins under the wordmark — never over the
-    // light→vessel path it describes, never under the sheet
+    // narrow screens: when the sheet is up, the tip docks just above it —
+    // sector bands and the vessel keep the top of the sea. Otherwise it
+    // pins under the wordmark.
     if (vw <= 640) {
-      return { left: "50%", top: 64, transform: "translateX(-50%)" } as const;
+      if (selected && clearanceBottom > 60) {
+        return { left: 12, bottom: clearanceBottom } as const;
+      }
+      return { left: "50%", top: 60, transform: "translateX(-50%)" } as const;
     }
     if (!anchor || anchor.offscreen) {
       return { left: "50%", top: Math.min(vh * 0.28, sheetTop - 140), transform: "translateX(-50%)" } as const;
@@ -114,7 +121,7 @@ export default function Guide({
     if (left + W > vw - 12) left = anchor.x - W - 34;
     top = Math.max(70, Math.min(top, sheetTop - Hh));
     return { left, top } as const;
-  }, [anchor]);
+  }, [anchor, selected, clearanceBottom]);
 
   return (
     <>
@@ -130,7 +137,12 @@ export default function Guide({
         <span className="k">{tip.k}</span>
         {tip.body}
         <div className="row">
-          {"goto" in tip && tip.goto && anchor?.offscreen ? (
+          {step === 0 && (
+            <button className="goto" onClick={onTargetClick}>
+              {targetName ? `read ${targetName}` : "read a light"} →
+            </button>
+          )}
+          {step === 1 && "goto" in tip && tip.goto && anchor?.offscreen ? (
             <button className="goto" onClick={onFlyToTarget}>
               bring it into view
             </button>

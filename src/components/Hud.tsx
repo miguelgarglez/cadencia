@@ -39,16 +39,31 @@ export default function Hud({
     return () => clearInterval(t);
   }, []);
 
-  // the signals popover closes on any outside press or Escape
+  // the signals popover closes on outside press; Escape consumes the topmost
+  // layer only (stopPropagation keeps it from also deselecting a light)
   useEffect(() => {
     if (!prefsOpen) return;
+    const pop = document.querySelector(".prefs-pop");
+    pop?.querySelector<HTMLElement>("button")?.focus();
     const down = (e: PointerEvent) => {
       if (!(e.target as HTMLElement).closest(".prefs-wrap")) setPrefsOpen(false);
     };
-    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setPrefsOpen(false); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); setPrefsOpen(false); }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const items = [...(pop?.querySelectorAll<HTMLElement>("button") ?? [])];
+        const i = items.indexOf(document.activeElement as HTMLElement);
+        const next = items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+        next?.focus();
+        e.preventDefault();
+      }
+    };
     document.addEventListener("pointerdown", down);
     document.addEventListener("keydown", key);
-    return () => { document.removeEventListener("pointerdown", down); document.removeEventListener("keydown", key); };
+    return () => {
+      document.removeEventListener("pointerdown", down);
+      document.removeEventListener("keydown", key);
+    };
   }, [prefsOpen]);
 
   return (

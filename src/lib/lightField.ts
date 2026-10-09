@@ -40,6 +40,7 @@ out vec2 v_uv;
 out vec3 v_color;
 out float v_level;
 out float v_kind; // 0 normal, 1 uncharted (static dot)
+out float v_damp; // zoom density damping for halos
 
 void main() {
   float meta = a_meta;
@@ -102,6 +103,9 @@ void main() {
 
   v_level = level * dayFactor;
   v_color = col;
+  // dense coasts would otherwise merge into white threads — halos back off
+  // at low zoom while cores keep their individual rhythms legible
+  v_damp = smoothstep(2.5, 6.5, u_zoom);
 
   vec4 clip = u_matrix * vec4(a_merc, 0.0, 1.0);
   float major = mod(floor(meta / 65536.0), 2.0);
@@ -120,12 +124,13 @@ in vec2 v_uv;
 in vec3 v_color;
 in float v_level;
 in float v_kind;
+in float v_damp;
 out vec4 outColor;
 void main() {
   float r = length(v_uv);
   if (r > 1.0) discard;
   float core = pow(max(0.0, 1.0 - r), 4.0) * 1.15;
-  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38;
+  float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38 * mix(0.3, 1.0, v_damp);
   float a = (core + halo) * v_level;
   if (v_kind == 1.0) a = pow(max(0.0, 1.0 - r), 2.0) * 0.30;
   else a = max(a, pow(max(0.0, 1.0 - r), 3.0) * 0.075); // charted symbol ember

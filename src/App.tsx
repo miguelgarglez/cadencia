@@ -115,7 +115,10 @@ export default function App() {
   const [about, setAbout] = useState(false);
   const [aboutLeaving, setAboutLeaving] = useState(false);
   const [guideOn, setGuideOn] = useState(() => !lsGet("cadencia-guide-done"));
+  const guideOnRef = useRef(guideOn);
+  guideOnRef.current = guideOn;
   const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null; seen: Light | null } | null>(null);
+  const [sheetH, setSheetH] = useState(0);
   const [crossed, setCrossed] = useState(false);
   const [guideAnchor, setGuideAnchor] = useState<GuideAnchor | null>(null);
   const [guideTargetName, setGuideTargetName] = useState<string | null>(null);
@@ -286,6 +289,45 @@ export default function App() {
     return out;
   }, []);
 
+  // a screen point on the vessel's orbit that clears the free rect AND every
+  // measured overlay — the same candidate walk used at spawn and on refit
+  const vesselSpot = useCallback((map: MLMap, p: StorePoint, c?: { x: number; y: number }) => {
+    c = c ?? map.project([p.lon, p.lat]);
+    const fr = freeRect();
+    const blocks = blockedRects();
+    const clear = (x: number, y: number) =>
+      x > fr.x0 && x < fr.x1 && y > fr.y0 && y < fr.y1 &&
+      !blocks.some((r) => x > r.left - 24 && x < r.right + 24 && y > r.top - 24 && y < r.bottom + 24);
+    const R = window.innerWidth <= 640 ? 105 : 135;
+    const widest = widestSectorMid(p);
+    // prefer bearings inside a charted sector — the vessel starts inside the
+    // lesson, next to a boundary worth crossing
+    const inSector = (deg: number) =>
+      p.lights.some((l) => l.sectors.some((s) =>
+        s.start <= s.end ? deg >= s.start && deg <= s.end : deg >= s.start || deg <= s.end));
+    const candidates = [widest, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
+    for (const onlySectors of [true, false]) {
+      for (const RR of [R, R * 1.5, R * 2.2]) {
+        for (const deg of candidates) {
+          const a = (deg * Math.PI) / 180;
+          const x = c.x + Math.sin(a) * RR, y = c.y - Math.cos(a) * RR;
+          if (!clear(x, y)) continue;
+          // screen angle ≠ geographic bearing on Mercator — test the real one
+          if (onlySectors) {
+            const ll = map.unproject([x, y]);
+            if (!inSector(bearingDeg(p.lat, p.lon, ll.lat, ll.lng))) continue;
+          }
+          return { x, y };
+        }
+      }
+    }
+    const a = (widest * Math.PI) / 180;
+    return {
+      x: Math.min(Math.max(c.x + Math.sin(a) * R, fr.x0), fr.x1),
+      y: Math.min(Math.max(c.y - Math.cos(a) * R, fr.y0), fr.y1),
+    };
+  }, [freeRect, blockedRects]);
+
   const removeVessel = useCallback(() => {
     vesselRef.current?.el.remove();
     vesselRef.current = null;
@@ -391,6 +433,14 @@ export default function App() {
         haptic("success");
         setCrossed(true);
         if (isSoundOn()) tick();
+        // acknowledge the boundary at the point of manipulation
+        const el = vesselRef.current?.el;
+        if (el) {
+          el.classList.remove("crossed");
+          void el.offsetWidth; // restart the pulse
+          el.classList.add("crossed");
+          setTimeout(() => el.classList.remove("crossed"), 1400);
+        }
       } else if (prev && prev.color !== color) {
         haptic("nudge");
       }
@@ -451,9 +501,14 @@ export default function App() {
     fieldRef.current?.setSelectedColor(null);
     fieldRef.current?.setActiveLight(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
-    const pad = { top: 0, left: 0, right: 0, bottom: sheetRef.current + DOCK_H + 16 };
+    // while the guide is up on a narrow screen, keep headroom above the
+    // light — its northern sector band and vessel need the space
+    const pad = {
+      top: guideOnRef.current && window.innerWidth <= 640 ? 200 : 0,
+      left: 0, right: 0,
+      bottom: sheetRef.current + DOCK_H + 16,
+    };
     const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
-    const moving = map.getZoom() !== cam.zoom || Math.abs(map.getCenter().lng - p.lon) > 0.001 || Math.abs(map.getCenter().lat - p.lat) > 0.001;
     const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduceMotion) {
       map.jumpTo({ ...cam, padding: pad });
@@ -463,10 +518,17 @@ export default function App() {
     history.replaceState(null, "", `#${p.lat.toFixed(3)},${p.lon.toFixed(3)},${Math.max(map.getZoom(), cam.zoom).toFixed(1)}/${p.id}`);
     if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
     if (hasSectors) {
-      // spawn only after the camera settles — unprojecting mid-flight strands
-      // it off-screen. jumpTo has already landed, so don't wait for moveend.
-      if (moving && !reduceMotion) map.once("moveend", () => { if (selectedRef.current === p) spawnVessel(map, p); });
-      else spawnVessel(map, p);
+      // spawn only after the camera truly stops — onHeightChange's setPadding
+      // fires stray moveends mid-ease, and a mid-flight unproject strands the
+      // vessel. Poll isMoving; the floor lets the sheet + guide dock first.
+      const t0 = performance.now();
+      const wait = () => {
+        if (selectedRef.current !== p) return;
+        if (!map.isMoving() && performance.now() - t0 > (reduceMotion ? 60 : 950)) spawnVessel(map, p);
+        else if (performance.now() - t0 < 2200) setTimeout(wait, 90);
+        else spawnVessel(map, p);
+      };
+      setTimeout(wait, 90);
     } else removeVessel();
     setTimeout(updateOverlay, 950);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -518,36 +580,7 @@ export default function App() {
     // spawn on open screen — walk candidate bearings until the projected spot
     // clears the sheet, the dock, and the wordmark zone
     const c = map.project([p.lon, p.lat]);
-    const fr = freeRect();
-    const blocks = blockedRects();
-    const clear = (x: number, y: number) =>
-      x > fr.x0 && x < fr.x1 && y > fr.y0 && y < fr.y1 &&
-      !blocks.some((r) => x > r.left - 24 && x < r.right + 24 && y > r.top - 24 && y < r.bottom + 24);
-    const R = window.innerWidth <= 640 ? 105 : 135;
-    const widest = widestSectorMid(p);
-    const candidates = [widest, ...[0, 30, 60, 300, 330, 90, 270, 45, 315, 150, 210].map((a) => (widest + a) % 360)];
-    let pos: { x: number; y: number } | null = null;
-    for (const deg of candidates) {
-      const a = (deg * Math.PI) / 180;
-      const x = c.x + Math.sin(a) * R, y = c.y - Math.cos(a) * R;
-      if (clear(x, y)) { pos = { x, y }; break; }
-    }
-    // no bearing clears the overlays — widen the ring once, then clamp
-    if (!pos) for (const RR of [R * 1.5, R * 2.2]) {
-      for (const deg of candidates) {
-        const a = (deg * Math.PI) / 180;
-        const x = c.x + Math.sin(a) * RR, y = c.y - Math.cos(a) * RR;
-        if (clear(x, y)) { pos = { x, y }; break; }
-      }
-      if (pos) break;
-    }
-    if (!pos) {
-      const a = (widest * Math.PI) / 180;
-      pos = {
-        x: Math.min(Math.max(c.x + Math.sin(a) * R, fr.x0), fr.x1),
-        y: Math.min(Math.max(c.y - Math.cos(a) * R, fr.y0), fr.y1),
-      };
-    }
+    const pos = vesselSpot(map, p, c);
     const ll = map.unproject([pos.x, pos.y]);
     vesselRef.current = { el, lat: ll.lat, lon: ll.lng };
     positionVessel(map);
@@ -592,10 +625,30 @@ export default function App() {
       positionVessel(map);
       applyVesselBearing(p, ll.lat, ll.lng);
     });
-    const up = () => { vesselDrag.current = false; pid = -1; el.classList.remove("grabbed"); };
+    const up = (e: PointerEvent) => {
+      if (e.pointerId !== pid) return;
+      vesselDrag.current = false; pid = -1; el.classList.remove("grabbed");
+    };
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
-  }, [applyVesselBearing, blockedRects, freeRect, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
+  }, [applyVesselBearing, vesselSpot, haptic, positionVessel, removeVessel, steerVesselTo, currentScreenBearing]);
+
+  // after the sheet settles, keep the vessel inside the working area — if it
+  // now sits under the sheet or a tip, move it to a clear bearing on the ring
+  const refitVessel = useCallback(() => {
+    const map = mapRef.current, v = vesselRef.current, p = selectedRef.current;
+    if (!map || !v || !p) return;
+    const pt = map.project([v.lon, v.lat]);
+    const fr = freeRect(), blocks = blockedRects();
+    const inside = pt.x > fr.x0 && pt.x < fr.x1 && pt.y > fr.y0 && pt.y < fr.y1 &&
+      !blocks.some((r) => pt.x > r.left - 16 && pt.x < r.right + 16 && pt.y > r.top - 16 && pt.y < r.bottom + 16);
+    if (inside) return;
+    const spot = vesselSpot(map, p);
+    const ll = map.unproject([spot.x, spot.y]);
+    v.lat = ll.lat; v.lon = ll.lng;
+    positionVessel(map);
+    applyVesselBearing(p, ll.lat, ll.lng);
+  }, [freeRect, blockedRects, vesselSpot, positionVessel, applyVesselBearing]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -765,16 +818,16 @@ export default function App() {
     }
   }, [haptic]);
 
-  const saveCard = useCallback(async (): Promise<boolean> => {
+  const saveCard = useCallback(async (): Promise<{ ok: boolean; url?: string }> => {
     const p = selectedRef.current;
-    if (!p) return false;
+    if (!p) return { ok: false };
     try {
       const m = await import("./lib/share.ts");
-      const ok = await m.shareCard(p, vesselInfoRef.current?.seen ?? p.light, vesselInfoRef.current?.b ?? null);
-      if (ok) haptic("success");
-      return ok;
+      const r = await m.shareCard(p, vesselInfoRef.current?.seen ?? p.light, vesselInfoRef.current?.b ?? null);
+      if (r.ok) haptic("success");
+      return r;
     } catch {
-      return false;
+      return { ok: false };
     }
   }, [haptic]);
 
@@ -782,9 +835,12 @@ export default function App() {
     if (!vesselInfo || !selected) return null;
     const { b, color, seen } = vesselInfo;
     if (!color || !seen) return `bearing ${Math.round(b)}° — outside the charted sectors, this light would not help you`;
-    const word = color === "W" ? "white" : color === "R" ? "red" : color === "G" ? "green" : color === "Y" ? "yellow" : color === "Bu" ? "blue" : "violet";
+    const word = (c: string) => c === "W" ? "white" : c === "R" ? "red" : c === "G" ? "green" : c === "Y" ? "yellow" : c === "Bu" ? "blue" : "violet";
+    // describe the whole signal, not just the lit color at this instant
+    const litColors = [...new Set(seen.segs.filter((s) => s.level > 0).map((s) => seen.colors[s.color] ?? "W"))];
+    const shows = litColors.length > 1 ? `${litColors.map(word).join("/")}, alternating` : word(color);
     const which = seen !== selected.light ? ` (${notation(seen)})` : "";
-    return `bearing ${Math.round(b)}° — from here the light shows ${word}${which}`;
+    return `bearing ${Math.round(b)}° — from here the light shows ${shows}${which}`;
   }, [vesselInfo, selected]);
 
   const activeLight = vesselInfo?.seen ?? selected?.light;
@@ -834,7 +890,17 @@ export default function App() {
           onSaveCard={saveCard}
           onHeightChange={(h) => {
             sheetRef.current = h;
-            mapRef.current?.setPadding({ top: 0, left: 0, right: 0, bottom: h + DOCK_H + 16 });
+            setSheetH(h);
+            const top = guideOnRef.current && window.innerWidth <= 640 ? 200 : 0;
+            mapRef.current?.setPadding({ top, left: 0, right: 0, bottom: h + DOCK_H + 16 });
+          }}
+          onSettle={() => {
+            const map = mapRef.current;
+            const top = guideOnRef.current && window.innerWidth <= 640 ? 200 : 0;
+            if (map && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+              map.easeTo({ padding: { top, left: 0, right: 0, bottom: sheetRef.current + DOCK_H + 16 }, duration: 320 });
+            } else map?.setPadding({ top, left: 0, right: 0, bottom: sheetRef.current + DOCK_H + 16 });
+            setTimeout(refitVessel, 340);
           }}
         />
       )}
@@ -845,6 +911,7 @@ export default function App() {
           vesselActive={!!vesselRef.current}
           crossed={crossed}
           targetName={guideTargetName}
+          clearanceBottom={sheetH + DOCK_H + 10}
           onFlyToTarget={flyToGuideTarget}
           onTargetClick={() => {
             const map = mapRef.current, t = guideTargetRef.current;
@@ -854,18 +921,18 @@ export default function App() {
         />
       )}
       {about && <About onClose={closeAbout} leaving={aboutLeaving} />}
-      {dataError && ready && (
+      {/* one error surface — a data failure outranks a dead link */}
+      {dataError && ready ? (
         <div className="err-tray" role="alert">
           <span>the light list failed to arrive — the sea is still here, but it can't speak</span>
           <button onClick={() => { setDataError(false); store.retry(); store.init().then((ix) => setTotal(ix.points)).catch(() => setDataError(true)); }}>retry</button>
         </div>
-      )}
-      {linkMiss && (
+      ) : linkMiss ? (
         <div className="err-tray" role="alert">
           <span>that light isn't on this chart — it may have been renamed or dropped at sea</span>
           <button onClick={() => setLinkMiss(false)}>dismiss</button>
         </div>
-      )}
+      ) : null}
     </>
   );
 }
