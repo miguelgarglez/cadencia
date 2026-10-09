@@ -110,6 +110,7 @@ void main() {
   float halo = pow(max(0.0, 1.0 - r), 1.6) * 0.38;
   float a = (core + halo) * v_level;
   if (v_kind == 1.0) a = pow(max(0.0, 1.0 - r), 2.0) * 0.30;
+  else a = max(a, pow(max(0.0, 1.0 - r), 3.0) * 0.075); // charted symbol ember
   outColor = vec4(v_color * a, a);
 }
 `;
@@ -307,7 +308,9 @@ export class LightField implements CustomLayerInterface {
     gl.uniformMatrix4fv(this.u.u_matrix!, false, matrix as Float32Array);
     // wall-clock sync: all viewers see the same sea
     const now = this.startWall + (performance.now() / 1000 - this.startPerf);
-    gl.uniform1f(this.u.u_time!, now);
+    // float32 dies at wall-clock magnitude (1.7e9) — use time-of-day so mod() stays precise.
+    // phase is still identical for every viewer (same UTC second-of-day).
+    gl.uniform1f(this.u.u_time!, now % 86400);
     gl.uniform2f(this.u.u_viewport!, w, h);
     gl.uniform1f(this.u.u_px!, map.getPixelRatio());
     gl.uniform1f(this.u.u_zoom!, map.getZoom());
@@ -321,8 +324,11 @@ export class LightField implements CustomLayerInterface {
     gl.uniform1i(this.u.u_seq!, 0);
 
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive bloom
+    gl.blendFunc(gl.ONE, gl.ONE); // FS outputs premultiplied col*a — pure additive
     gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.STENCIL_TEST);
+    gl.disable(gl.SCISSOR_TEST);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.instCount);
     gl.bindVertexArray(null);
     gl.useProgram(null);

@@ -1,6 +1,6 @@
 // cadencia data pipeline — step 2: parse seamark tags, shard lights into public/lights/.
 // Usage: node pipeline/build-shards.mjs
-import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseLights } from "../src/iala.ts";
@@ -10,7 +10,28 @@ const RAW = join(ROOT, "pipeline", "raw-lights.json");
 const OUTDIR = join(ROOT, "public", "lights");
 const CELL_LAT = 5, CELL_LON = 10; // shard cell size in degrees
 
-const raw = JSON.parse(readFileSync(RAW, "utf8"));
+let raw;
+if (existsSync(RAW)) {
+  raw = JSON.parse(readFileSync(RAW, "utf8"));
+} else {
+  // merge whatever tiles are in cache (fetch may still be running)
+  const elements = [];
+  const seen = new Set();
+  const cacheDir = join(ROOT, "pipeline", "cache");
+  for (const f of readdirSync(cacheDir).filter((f) => f.endsWith(".json"))) {
+    const d = JSON.parse(readFileSync(join(cacheDir, f), "utf8"));
+    for (const el of d.elements ?? []) {
+      const lat = el.lat ?? el.center?.lat;
+      const lon = el.lon ?? el.center?.lon;
+      if (lat == null || lon == null) continue;
+      const id = `${el.type}/${el.id}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      elements.push({ id, type: el.type, lat, lon, tags: el.tags ?? {} });
+    }
+  }
+  raw = { fetchedAt: new Date().toISOString(), count: elements.length, elements };
+}
 const cells = new Map(); // key -> { points: [], names: string[] }
 const stats = { elements: raw.count, points: 0, lights: 0, uncharted: 0, unparsed: 0, chars: new Map(), shards: 0 };
 

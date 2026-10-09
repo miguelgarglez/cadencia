@@ -41,6 +41,7 @@ export default function LightCard({
 
   const name = point.name ?? point.ref ?? "unnamed light";
   const sectored = l.sectors.length > 0;
+  const tp = l.period > 0 ? t / l.period : 0;
   const W = w - 4, H = 30, y = 14;
   let acc = 0;
   const segs = l.segs.map((s) => {
@@ -63,7 +64,10 @@ export default function LightCard({
       <div className="strip" ref={stripRef}>
         <svg viewBox={`0 0 ${w} ${H}`} aria-hidden>
           <line x1={0} x2={W} y1={y} y2={y} stroke="#1e3448" strokeWidth={1} />
-          {segs.map(({ x0, x1, s }, i) =>
+          {l.period <= 0 && (
+            <line x1={2} x2={W - 2} y1={y} y2={y} stroke={colorHex(l.colors[0] ?? "W")} strokeWidth={6} strokeLinecap="round" className="seg-lit" />
+          )}
+          {l.period > 0 && segs.map(({ x0, x1, s }, i) =>
             s.level > 0 ? (
               <line
                 key={i}
@@ -78,24 +82,20 @@ export default function LightCard({
               />
             ) : null,
           )}
-          <line
-            className="playhead-glow"
-            x1={(t / l.period) * W}
-            x2={(t / l.period) * W}
-            y1={4}
-            y2={H - 4}
-          />
-          <line
-            className="playhead"
-            x1={(t / l.period) * W}
-            x2={(t / l.period) * W}
-            y1={6}
-            y2={H - 6}
-          />
-          <text x={0} y={H - 2} fontSize={8} fill="#5b6b7d" fontFamily="IBM Plex Mono, monospace">0s</text>
-          <text x={W} y={H - 2} fontSize={8} fill="#5b6b7d" textAnchor="end" fontFamily="IBM Plex Mono, monospace">
-            {l.period}s
-          </text>
+          {l.period > 0 && (
+            <>
+              <line className="playhead-glow" x1={tp * W} x2={tp * W} y1={4} y2={H - 4} />
+              <line className="playhead" x1={tp * W} x2={tp * W} y1={6} y2={H - 6} />
+            </>
+          )}
+          {l.period > 0 && (
+            <>
+              <text x={0} y={H - 2} fontSize={8} fill="#5b6b7d" fontFamily="IBM Plex Mono, monospace">0s</text>
+              <text x={W} y={H - 2} fontSize={8} fill="#5b6b7d" textAnchor="end" fontFamily="IBM Plex Mono, monospace">
+                {l.period}s
+              </text>
+            </>
+          )}
         </svg>
       </div>
       <div className="meta">

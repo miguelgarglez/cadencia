@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+const b = await chromium.launch();
+const pg = await b.newPage({ viewport: { width: 1440, height: 900 } });
+const errs = [];
+pg.on("console", m => { if (m.type() === "error") errs.push(m.text()); });
+pg.on("pageerror", e => errs.push(String(e)));
+await pg.goto("http://localhost:5233/#-46.5,169.5,8", { waitUntil: "networkidle", timeout: 30000 });
+await pg.waitForTimeout(5000);
+await pg.screenshot({ path: "/tmp/cadencia-nz.png" });
+await pg.waitForTimeout(2500);
+await pg.screenshot({ path: "/tmp/cadencia-nz-b.png" });
+console.log("errors:", JSON.stringify(errs.slice(0,10)));
+await b.close();

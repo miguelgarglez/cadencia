@@ -20,6 +20,14 @@ const tiles = [];
 for (let s = LAT_MIN; s < LAT_MAX; s += TILE)
   for (let w = -180; w < 180; w += TILE)
     tiles.push([s, w, Math.min(s + TILE, LAT_MAX), w + TILE]);
+if (process.argv.includes("--rev")) tiles.reverse();
+if (process.argv.includes("--revlon")) {
+  // same rows, but walk longitudes east→west so two workers don't collide
+  const rows = new Map();
+  for (const t of tiles) { const k = t[0]; if (!rows.has(k)) rows.set(k, []); rows.get(k).push(t); }
+  tiles.length = 0;
+  for (const [, r] of rows) tiles.push(...r.slice().reverse());
+}
 
 async function fetchTile([s, w, n, e], attempt = 0) {
   const bbox = `${s},${w},${n},${e}`;

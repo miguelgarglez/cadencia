@@ -55,6 +55,7 @@ canvas { display: block; }
 @media (max-width: 640px) {
   .brand h1 { font-size: 24px; }
   .brand .tag { display: none; }
+  .corner.br { bottom: 38px; }
 }
 
 .corner { position: absolute; font-family: var(--font-mono); font-size: 10px; color: var(--dim); letter-spacing: 0.12em; }

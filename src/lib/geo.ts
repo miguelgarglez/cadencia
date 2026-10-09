@@ -15,16 +15,14 @@ export function cellKey(lat: number, lon: number): string {
 }
 
 export function cellsForBounds(w: number, s: number, e: number, n: number): string[] {
+  if (e < w) e += 360; // antimeridian
   const keys: string[] = [];
   const w0 = Math.floor(w / CELL_LON), e0 = Math.floor(e / CELL_LON);
-  const s0 = Math.floor(s / CELL_LAT), n0 = Math.floor(n / CELL_LAT);
+  const s0 = Math.max(-18, Math.floor(s / CELL_LAT));
+  const n0 = Math.min(16, Math.floor(n / CELL_LAT));
   for (let i = s0; i <= n0; i++) {
     for (let j = w0; j <= e0; j++) {
-      // antimeridian wrap
-      let jj = j;
-      if (w > e) {
-        // bounds cross the antimeridian: skip cells outside both halves
-      }
+      const jj = ((j + 18) % 36 + 36) % 36 - 18; // wrap lon cell into -18..17
       keys.push(`${i}_${jj}`);
     }
   }

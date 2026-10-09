@@ -71,7 +71,7 @@ export default function App() {
   const [sound, setSound] = useState(false);
   const [about, setAbout] = useState(false);
   const [guideOn, setGuideOn] = useState(() => !localStorage.getItem("cadencia-guide-done"));
-  const [vesselColor, setVesselColor] = useState<FlashColor | null>(null);
+  const [vesselInfo, setVesselInfo] = useState<{ b: number; color: FlashColor | null } | null>(null);
 
   // ---------- map boot ----------
   useEffect(() => {
@@ -102,6 +102,13 @@ export default function App() {
         store.needBounds(b.getWest(), b.getSouth(), b.getEast(), b.getNorth());
       };
       sync();
+      updateInView(map, setInView);
+      map.on("idle", () => updateInView(map, setInView));
+      // the sea never holds still: continuous repaint drives the flash clock
+      const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const pump = () => { map.triggerRepaint(); requestAnimationFrame(pump); };
+      if (reduceMotion) setInterval(() => map.triggerRepaint(), 1000);
+      else requestAnimationFrame(pump);
       map.on("moveend", sync);
       map.on("move", () => {
         updateOverlay();
@@ -122,6 +129,9 @@ export default function App() {
     });
 
     store.init().then((ix) => setTotal(ix.lights)).catch(() => setDataError(true));
+    // debug hook for verification scripts
+    (window as unknown as Record<string, unknown>).__cadencia = store;
+    (window as unknown as Record<string, unknown>).__map = map;
     return () => {
       map.remove();
       mapRef.current = null;
@@ -132,7 +142,7 @@ export default function App() {
   // ---------- selection ----------
   const deselect = useCallback(() => {
     setSelected(null);
-    setVesselColor(null);
+    setVesselInfo(null);
     fieldRef.current?.setSelected(null);
     fieldRef.current?.setSelectedColor(null);
     removeVessel();
@@ -141,11 +151,13 @@ export default function App() {
 
   const select = useCallback((map: MLMap, p: StorePoint, _x: number, _y: number) => {
     setSelected(p);
-    setVesselColor(null);
+    setVesselInfo(null);
     fieldRef.current?.setSelected(p.id);
     fieldRef.current?.setSelectedColor(null);
     const hasSectors = p.lights.some((l) => l.sectors.length);
-    map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5), duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
+    const cam = { center: [p.lon, p.lat] as [number, number], zoom: Math.max(map.getZoom(), hasSectors ? 9.5 : 7.5) };
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) map.jumpTo(cam);
+    else map.easeTo({ ...cam, duration: 900, easing: (t) => 1 - Math.pow(1 - t, 3) });
     if (isSoundOn()) pulse(0, Math.min(0.8, p.light.period * 0.2));
     if (hasSectors) spawnVessel(map, p);
     else removeVessel();
@@ -161,11 +173,13 @@ export default function App() {
     el.setAttribute("aria-label", "vessel — drag to change bearing");
     el.tabIndex = 0;
     map.getCanvasContainer().appendChild(el);
-    const startB = 140;
-    const distKm = Math.max(2, 140 / Math.pow(2, map.getZoom() - 9));
-    const [lat, lon] = destFromBearing(p, startB, distKm);
-    vesselRef.current = { el, lat, lon };
+    // spawn a fixed screen distance away so the vessel is always reachable
+    const c = map.project([p.lon, p.lat]);
+    const a = (140 * Math.PI) / 180;
+    const ll = map.unproject([c.x + Math.sin(a) * 130, c.y - Math.cos(a) * 130]);
+    vesselRef.current = { el, lat: ll.lat, lon: ll.lng };
     positionVessel(map);
+    applyVesselBearing(p, ll.lat, ll.lng);
 
     let pid = -1;
     el.addEventListener("pointerdown", (e) => {
@@ -173,9 +187,15 @@ export default function App() {
       el.setPointerCapture(pid);
       vesselDrag.current = true;
       e.preventDefault();
+      e.stopPropagation();
     });
+    el.addEventListener("mousedown", (e) => e.stopPropagation());
+    el.addEventListener("touchstart", (e) => e.stopPropagation());
+    // pointer capture routes the release click back to the vessel — don't let it deselect
+    el.addEventListener("click", (e) => e.stopPropagation());
     el.addEventListener("pointermove", (e) => {
       if (!vesselDrag.current || !vesselRef.current) return;
+      e.stopPropagation();
       const ll = map.unproject([e.clientX, e.clientY]);
       vesselRef.current.lat = ll.lat;
       vesselRef.current.lon = ll.lng;
@@ -196,7 +216,7 @@ export default function App() {
         if (inArc) color = l.colors[s.color] ?? l.colors[0] ?? "W";
       }
     }
-    setVesselColor(color);
+    setVesselInfo({ b, color });
     fieldRef.current?.setSelectedColor(color ? hexToRgb(colorHex(color)) : null);
     updateOverlay();
   }, []);
@@ -271,12 +291,24 @@ export default function App() {
 
   useEffect(() => { updateOverlay(); }, [selected, updateOverlay]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (about) setAbout(false);
+      else if (selected) deselect();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [about, selected, deselect]);
+
   // ---------- misc ----------
   const pick = useCallback((map: MLMap, x: number, y: number, radius = 20): StorePoint | null => {
+    const b = map.getBounds();
     let best: StorePoint | null = null;
     let bestD = radius;
     for (const p of store.points.values()) {
       if (p.uncharted) continue;
+      if (p.lat < b.getSouth() || p.lat > b.getNorth() || p.lon < b.getWest() || p.lon > b.getEast()) continue;
       const pt = map.project([p.lon, p.lat]);
       const d = Math.hypot(pt.x - x, pt.y - y);
       if (d < bestD) { bestD = d; best = p; }
@@ -294,9 +326,12 @@ export default function App() {
   }, [selected]);
 
   const vesselNote = useMemo(() => {
-    if (!vesselColor || !selected) return null;
-    return `from your bearing the light shows ${vesselColor === "W" ? "white" : vesselColor === "R" ? "red" : vesselColor === "G" ? "green" : vesselColor.toLowerCase()}`;
-  }, [vesselColor, selected]);
+    if (!vesselInfo || !selected) return null;
+    const { b, color } = vesselInfo;
+    if (!color) return `bearing ${Math.round(b)}° — outside the charted sectors, this light would not help you`;
+    const word = color === "W" ? "white" : color === "R" ? "red" : color === "G" ? "green" : color.toLowerCase();
+    return `bearing ${Math.round(b)}° — from here the light shows ${word}`;
+  }, [vesselInfo, selected]);
 
   return (
     <>
@@ -348,14 +383,6 @@ function updateInView(map: MLMap, set: (n: number) => void) {
     if (p.lon >= b.getWest() && p.lon <= b.getEast() && p.lat >= b.getSouth() && p.lat <= b.getNorth() && !p.uncharted) n++;
   }
   set(n);
-}
-
-function destFromBearing(p: StorePoint, bearing: number, distKm: number): [number, number] {
-  const R = 6371, d = distKm / R, θ = (bearing * Math.PI) / 180;
-  const φ1 = (p.lat * Math.PI) / 180, λ1 = (p.lon * Math.PI) / 180;
-  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(d) + Math.cos(φ1) * Math.sin(d) * Math.cos(θ));
-  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(d) * Math.cos(φ1), Math.cos(d) - Math.sin(φ1) * Math.sin(φ2));
-  return [(φ2 * 180) / Math.PI, ((λ2 * 180) / Math.PI + 540) % 360 - 180];
 }
 
 function hexToRgb(hex: string): [number, number, number] {
