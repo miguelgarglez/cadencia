@@ -75,7 +75,8 @@ export default function App() {
 
   // ---------- map boot ----------
   useEffect(() => {
-    const start = hashToView() ?? { center: [-4.5, 40.5] as [number, number], zoom: 4.4 };
+    const fromHash = hashToView();
+    const start = fromHash ?? { center: [0.8, 47.5] as [number, number], zoom: 3.1 };
     const map = new maplibregl.Map({
       container: wrapRef.current!,
       style: STYLE_URL,
@@ -103,6 +104,10 @@ export default function App() {
       };
       sync();
       updateInView(map, setInView);
+      // opening reveal: settle from the dark sea onto the busiest light field
+      if (!fromHash && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        map.easeTo({ center: [0.4, 50.2], zoom: 5.3, duration: 3400, easing: (t) => 1 - Math.pow(1 - t, 4) });
+      }
       map.on("idle", () => updateInView(map, setInView));
       // the sea never holds still: continuous repaint drives the flash clock
       const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
